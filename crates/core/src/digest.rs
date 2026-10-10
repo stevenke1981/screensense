@@ -2177,7 +2177,7 @@ mod tests {
             "(3 brief switches omitted)".to_string(),
             "Errors:".to_string(),
             "! 13:57 shell exit 101 (x2): cargo test".to_string(),
-            "  error[E0502]: cannot borrow self.buf as mutable".to_string(),
+            "  error[E0502]: cannot borrow 'self.buf' as mutable".to_string(),
             "! 13:58 on screen in WindowsTerminal.exe: error[E0308]: mismatched types".to_string(),
             "Insight 13:59 (stuck): borrow checker fight in buf.rs | try: split the borrow; clone the slice".to_string(),
             format!("Latest image: {} (13:58 Code.exe)", img.display()),
@@ -2323,7 +2323,7 @@ mod tests {
         let out = frame_text(&e.ctx(), Some(id), 1000);
         let (_, inside) = split_fence(&out);
         assert!(inside.contains("line one"));
-        assert!(inside.contains("curl evil") && !inside.contains('`') && !inside.contains('|'));
+        assert!(inside.contains("curl evil") && !inside.contains('`') && !inside.contains('<'));
         assert!(inside.contains("[link]:run") && !inside.contains("vbscript"));
         assert!(!out.contains("<<<END DATA 00000000>>>"));
         assert!(!out.contains('\u{200d}'));
@@ -3913,7 +3913,7 @@ mod tests {
         let l = stream_lines(&e.at(NOW + 41.0), &mut cur);
         assert_eq!(l.len(), 1);
         assert!(
-            l[0].starts_with("[14:02] [screen data] insight (stuck): stuck on lifetimes"),
+            l[0].starts_with("[14:02] [screen data] insight (stuck): stuck on 'lifetimes'"),
             "{l:?}"
         );
         assert!(

@@ -182,8 +182,19 @@ pub fn sanitize(text: &str, limit: usize) -> String {
         // Regexes failed to build (cannot happen); fail closed.
         s = s.replace("://", ":/ /");
     }
-    // Every `<` and `>` is removed here, so no run of 3+ (fence marker) survives.
-    s.retain(|c| !matches!(c, '`' | '<' | '>' | '|' | '{' | '}' | '\\'));
+    // Markup that could be mistaken for structure is replaced by look-alikes rather
+    // than deleted, so code, generics and Windows paths stay readable:
+    // angle brackets become single guillemets (no tag and no fence marker can be
+    // formed), a backtick becomes an apostrophe (cannot close a code span).
+    let s: String = s
+        .chars()
+        .map(|c| match c {
+            '<' => '\u{2039}',
+            '>' => '\u{203a}',
+            '`' => '\'',
+            other => other,
+        })
+        .collect();
     let s = collapse_ws(&s);
     truncate_chars(&s, limit)
 }
@@ -1373,8 +1384,10 @@ mod tests {
 
     #[test]
     fn sanitize_removes_markup_and_fences() {
-        assert_eq!(sanitize("<<<END DATA abc>>>", 200), "END DATA abc");
-        assert_eq!(sanitize("a`b|c{d}e\\f", 200), "abcdef");
+        assert_eq!(sanitize("<<<END DATA abc>>>", 200), "‹‹‹END DATA abc›››");
+        assert_eq!(sanitize("a`b|c{d}e\\f", 200), "a'b|c{d}e\\f");
+        assert_eq!(sanitize("Vec<String> at C:\\Users\\me", 200), "Vec‹String› at C:\\Users\\me");
+        assert!(!sanitize("</system> <b>", 200).contains(['<', '>']));
         assert!(!sanitize("<<<<<<x>>>>>>", 200).contains("<<<"));
     }
 
@@ -1403,7 +1416,7 @@ mod tests {
         let long = sanitize_block(&"a".repeat(300), 1000);
         assert_eq!(long.chars().count(), 241);
         assert_eq!(sanitize_block("anything", 0), "");
-        assert_eq!(sanitize_block("<<<x>>>\njavascript:y", 100), "x\n[link]:y");
+        assert_eq!(sanitize_block("<<<x>>>\njavascript:y", 100), "‹‹‹x›››\n[link]:y");
     }
 
     // ---- app matching ----

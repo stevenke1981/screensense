@@ -2008,7 +2008,7 @@ mod tests {
         assert_eq!(i.suggestions[1], "zerowidthtext");
         assert!(!i.suggestions[2].contains("https"));
         assert!(i.suggestions[2].contains("[url:evil.example]"));
-        assert!(!i.suggestions[2].contains('{') && !i.suggestions[2].contains('|'));
+        assert!(!i.suggestions[2].contains('<') && !i.suggestions[2].contains('>'));
     }
 
     // ---- may_run ----
@@ -2196,7 +2196,7 @@ mod tests {
         assert!(body.contains("exit 101: cargo test"), "{body}");
         assert!(body.contains("exit 0: ls"), "{body}");
         assert!(
-            body.contains("error[E0502]: cannot borrow self.buf as mutable"),
+            body.contains("error[E0502]: cannot borrow 'self.buf' as mutable"),
             "{body}"
         );
         assert!(body.contains("src/main.rs:10:5"), "{body}");
