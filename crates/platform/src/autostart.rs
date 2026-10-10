@@ -20,7 +20,7 @@ fn desktop_file() -> Option<PathBuf> {
 pub fn enable(exe: &Path) -> std::io::Result<()> {
     #[cfg(windows)]
     {
-        return crate::win_misc::autostart_enable(exe);
+        crate::win_misc::autostart_enable(exe)
     }
     #[cfg(not(windows))]
     {
@@ -50,7 +50,7 @@ pub fn enable(exe: &Path) -> std::io::Result<()> {
 pub fn disable() -> std::io::Result<()> {
     #[cfg(windows)]
     {
-        return crate::win_misc::autostart_disable();
+        crate::win_misc::autostart_disable()
     }
     #[cfg(not(windows))]
     {
@@ -68,7 +68,7 @@ pub fn disable() -> std::io::Result<()> {
 pub fn status() -> Option<String> {
     #[cfg(windows)]
     {
-        return crate::win_misc::autostart_status();
+        crate::win_misc::autostart_status()
     }
     #[cfg(not(windows))]
     {
