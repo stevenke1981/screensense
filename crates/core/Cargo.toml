@@ -1,0 +1,23 @@
+[package]
+name = "screensense-core"
+description = "ScreenSense core: privacy rules, storage, error detection, digest, MCP — no OS-specific code"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+regex.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+toml = "0.8"
+rusqlite = { version = "0.37", features = ["bundled"] }
+unicode-general-category = "1"
+# Plain HTTP only (no TLS stack): the analyzer talks to local model servers.
+ureq = { version = "2", default-features = false }
+
+[dev-dependencies]
+tempfile = "3"
