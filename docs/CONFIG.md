@@ -22,14 +22,29 @@ screensense config check    # parse the file and report problems
 This document is written from `crates/core/src/config.rs`; that file is the
 authority if the two ever disagree.
 
+## When a change takes effect
+
+The running daemon checks the config file about every 10 seconds. When it has
+changed (or appeared, or been removed), the new settings and privacy rules
+apply without a restart, and stored history the new rules forbid is deleted
+(see [PRIVACY.md](PRIVACY.md)). One exception: the OCR engine is chosen when
+the daemon starts, so a change to `capture.ocr` or `capture.ocr_language`
+needs `screensense daemon restart`. `screensense hook` reads the file on every
+call; `screensense mcp` reads it once, when it starts. A file that no longer
+parses is reported, and the daemon keeps working with defaults (rule 2 below).
+
 ## Rules that keep a bad config file safe
 
 1. **Privacy lists are additive.** Everything under `[privacy]` and `[apps]` is
    added on top of the built-in rules. Nothing in the file can remove or switch
    off a built-in rule.
 2. **A file that cannot be parsed is ignored as a whole.** Defaults apply, and
-   the error is shown by `screensense status` and `screensense doctor`. It does
-   not fail silently and it does not half-apply.
+   the error is shown by `screensense status`, `screensense doctor` and
+   `screensense config check`. It does not half-apply. Note what "defaults
+   apply" means for privacy: while the file is broken, your own additions
+   (hidden apps, regexes, keywords) are not in force either, only the built-in
+   rules are, and a running daemon keeps recording under them. Run
+   `screensense config check` after editing.
 3. **Unknown keys are rejected.** A typo such as `keep_imagez = true` is a parse
    error (rule 2 then applies), so a misspelt privacy setting cannot pass
    unnoticed.
@@ -52,16 +67,16 @@ A UTF-8 byte-order mark at the start of the file is tolerated (Notepad writes on
 
 | Key | Type | Default | Range | Meaning |
 |---|---|---|---|---|
-| `enabled` | bool | `true` | | Look at windows at all. |
+| `enabled` | bool | `true` | | `false` stops all looks: no screen text, no image, no errors found on screen. The window timeline (app and title, as the privacy rules allow), shell commands from the shell integration and the digest keep working. `status` notes "capture disabled in config". |
 | `min_interval_s` | float | `3.0` | 1 – 600 | Shortest gap between two looks at the same window. |
 | `max_interval_s` | float | `30.0` | `min_interval_s` – 3600 | Longest gap. The gap doubles every time a look finds nothing changed. |
 | `dwell_s` | float | `1.5` | 0 – 60 | A window must stay in front this long before its first look. |
 | `change_ratio` | float | `0.004` | 0 – 1 | Fraction of thumbnail pixels that must differ for a look to count as a change. |
 | `refresh_s` | float | `180.0` | 0 – 86400 | Re-read an unchanged window at least this often. `0` disables. |
-| `ocr` | bool | `true` | | Run text recognition. |
-| `ocr_language` | string | `""` | | Windows: a BCP-47 tag such as `zh-Hant-TW`; empty means the user's profile languages. Linux: a tesseract language spec such as `eng+chi_tra`; empty means `eng`. |
+| `ocr` | bool | `true` | | Run text recognition. `false` means there is no OCR engine, and **without one nothing is captured** (a frame that cannot be checked for secrets is not stored), so `false` has the same effect as `enabled = false` for screen content. Needs `daemon restart`. |
+| `ocr_language` | string | `""` | | Windows: a BCP-47 tag such as `zh-Hant-TW`; empty means the user's profile languages. Linux: a tesseract language spec such as `eng+chi_tra`; empty means `eng`. Needs `daemon restart`. |
 | `ocr_max_chars` | integer | `8000` | 200 – 100000 | Upper bound on recognised text kept per frame. |
-| `min_text_chars` | integer | `20` | | Frames with less recognised text than this are dropped: too little to verify they are safe. |
+| `min_text_chars` | integer | `20` | | Frames with fewer characters of recognised text than this are dropped: too little to verify they are safe. Counted on the text after soft redaction, with leading and trailing whitespace removed; every character counts the same, spaces and line breaks inside the text included. |
 | `keep_images` | bool | `true` | | Keep a pixel-redacted JPEG next to the text. `false` stores text only. |
 | `image_max_width` | integer | `1600` | 320 – 7680 | Stored images are scaled down to this width. |
 | `jpeg_quality` | integer | `70` | 20 – 95 | JPEG quality of stored images. |
@@ -131,8 +146,8 @@ token, every other character as one token.
 
 | Key | Type | Default | Range | Meaning |
 |---|---|---|---|---|
-| `dedupe_s` | float | `90.0` | 1 – 86400 | An error still on screen is the same sighting for this long. |
-| `repeat_window_s` | float | `900.0` | 10 – 86400 | Window in which re-appearances add to an error's count. |
+| `dedupe_s` | float | `90.0` | 1 – 86400 | An error with the same key seen again within this many seconds of its last sighting is the same sighting: no new entry, no count increase. |
+| `repeat_window_s` | float | `900.0` | 10 – 86400 | An error seen again later than `dedupe_s` but within this many seconds of its last sighting counts as a re-appearance: the existing entry's count goes up. Seen again after more than this, it is a new entry. |
 
 ## `[analyzer]`
 
@@ -140,14 +155,14 @@ Optional background analysis by a model running on this machine. Off by default.
 
 | Key | Type | Default | Range | Meaning |
 |---|---|---|---|---|
-| `enabled` | bool | `false` | | Turn the analyzer on. |
+| `enabled` | bool | `false` | | Lets the daemon run the analyzer in the background, when a new error appears. `screensense analyze` does not need it: it runs one analysis on demand as soon as `backend`, `url` and `model` form a usable setup. |
 | `backend` | string | `"ollama"` | | `"ollama"` (native API) or `"openai"` (OpenAI-compatible: LM Studio, llama.cpp, vLLM). |
 | `url` | string | `""` | | Empty means the backend's default: `http://127.0.0.1:11434` for `ollama`, `http://127.0.0.1:1234/v1` for `openai`. Only `http://` is accepted; `https://`, `user:password@`, a query or a fragment are refused. |
 | `model` | string | `""` | | Model name. Required when the analyzer is used. |
 | `allow_remote` | bool | `false` | | Allow a URL whose host is not a loopback address. Off by default so screen text cannot leave the machine by accident. |
 | `send_images` | bool | `false` | | Attach the latest stored image (needs a vision model). |
-| `min_gap_s` | float | `120.0` | 10 – 86400 | Minimum gap between two automatically triggered analyses. |
-| `max_calls_per_hour` | integer | `12` | | Upper bound on analyses per hour, manual ones included. |
+| `min_gap_s` | float | `120.0` | 10 – 86400 | Minimum age of the latest stored insight before the daemon starts another one. Does not apply to `screensense analyze`. |
+| `max_calls_per_hour` | integer | `12` | | Upper bound on stored analyses in the last hour; applies to manual runs too. Computed from the database, so it survives a restart. |
 | `timeout_s` | integer | `120` | 5 – 900 | Request timeout in seconds. |
 | `notify` | bool | `true` | | Show a desktop notification when an analysis has suggestions. |
 | `user_profile` | string | `""` | | One line about you, given to the model so advice fits (stack, preferred style). |

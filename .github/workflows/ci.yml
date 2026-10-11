@@ -42,29 +42,57 @@ jobs:
       - name: Tests
         run: cargo test --workspace
 
-      # The tests below talk to a real X server. Without SCREENSENSE_X11_TEST=1
-      # they return early, which is why `cargo test --workspace` above passes
-      # on a machine without a display.
+      # Three tests need a real X server. Without SCREENSENSE_X11_TEST=1 the
+      # first two return early, which is why `cargo test --workspace` above
+      # passes on a machine without a display; the third skips itself when
+      # Xvfb or the demo window is missing. A skipped test counts as passed
+      # by cargo, so each step below also fails when the log says "skipped"
+      # or when no test ran.
       - name: Build the demo window
         run: cargo build -p screensense-platform --example demo_window
 
+      # Platform backend: window list, capture, OCR and private-browsing
+      # answer against the demo window, plus a reconnect test.
       - name: X11 backend end to end (Xvfb)
+        shell: bash
         env:
           SCREENSENSE_X11_TEST: "1"
-        run: >
-          xvfb-run -a -s "-screen 0 1280x800x24"
-          cargo test -p screensense-platform --test x11_e2e -- --nocapture --test-threads=1
+        run: |
+          log="$RUNNER_TEMP/x11-platform.log"
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            cargo test -p screensense-platform --test x11_e2e -- --nocapture --test-threads=1 \
+            2>&1 | tee "$log"
+          if grep -Eqi 'skipped' "$log"; then echo "::error::an X11 test was skipped"; exit 1; fi
+          if ! grep -Eq '^test result: ok\. [1-9][0-9]* passed' "$log"; then echo "::error::no X11 test ran"; exit 1; fi
 
-      # Daemon end to end: capture -> OCR -> privacy -> store, in the same
-      # virtual display. NOTE: if no test with this path exists, cargo runs
-      # zero tests and this step passes without proving anything; check the
-      # "running N tests" line in the log.
+      # Daemon: the real sensor, capture and housekeeping threads against the
+      # demo window; checks the span, the stored frame and image, the error
+      # row and a clean stop.
       - name: Daemon end to end (Xvfb)
+        shell: bash
         env:
           SCREENSENSE_X11_TEST: "1"
-        run: >
-          xvfb-run -a -s "-screen 0 1280x800x24"
-          cargo test -p screensense daemon::tests::x11_end_to_end -- --nocapture --test-threads=1
+        run: |
+          log="$RUNNER_TEMP/x11-daemon.log"
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            cargo test -p screensense daemon::tests::x11_end_to_end -- --nocapture --test-threads=1 \
+            2>&1 | tee "$log"
+          if grep -Eqi 'skipped' "$log"; then echo "::error::the daemon test was skipped"; exit 1; fi
+          if ! grep -Eq '^test result: ok\. 1 passed' "$log"; then echo "::error::the daemon test did not run"; exit 1; fi
+
+      # CLI: `doctor --capture` against Xvfb (an ordinary window is captured,
+      # a window the rules hide is not). This test is not gated by an
+      # environment variable and starts its own Xvfb on display :300 or
+      # higher; xvfb-run is only here to match the other steps.
+      - name: doctor --capture end to end (Xvfb)
+        shell: bash
+        run: |
+          log="$RUNNER_TEMP/x11-cli.log"
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            cargo test -p screensense --test cli x11:: -- --nocapture --test-threads=1 \
+            2>&1 | tee "$log"
+          if grep -Eqi 'skipped' "$log"; then echo "::error::the doctor --capture test was skipped"; exit 1; fi
+          if ! grep -Eq '^test result: ok\. 1 passed' "$log"; then echo "::error::the doctor --capture test did not run"; exit 1; fi
 
   windows:
     name: Windows (clippy, tests, smoke)

@@ -45,8 +45,13 @@ exercises most of the first two sections.
 
 - [ ] A toast appears using the borrowed PowerShell AppUserModelID (it is
       attributed to "Windows PowerShell").
-- [ ] `autostart on` writes `HKCU\…\Run\ScreenSense` and the daemon starts at
-      sign-in without a console window.
+- [ ] `autostart on` writes `HKCU\…\Run\ScreenSense` (the command is the full
+      path of the exe followed by `daemon run`) and the daemon starts at
+      sign-in. The binary is a console-subsystem program and nothing hides its
+      console: `daemon start` creates the daemon with `CREATE_NO_WINDOW`, but a
+      process started by the Run key is not, so a console window may appear
+      and stay open. Check this. A daemon started this way has no log file
+      (`daemon run` writes to the console).
 - [ ] `daemon start` survives closing the terminal it was started from
       (a Job object that kills children on close would defeat it).
 - [ ] `pid_alive` and `daemon stop` behave.

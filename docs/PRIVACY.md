@@ -30,11 +30,22 @@ Everything is in one directory:
 | Linux | `$XDG_DATA_HOME/screensense`, by default `~/.local/share/screensense` |
 
 It holds `screensense.db` (SQLite, plus its `-wal` and `-shm` files), the
-`images` directory, `daemon.log` and `daemon.lock`. `SCREENSENSE_DATA` or
-`--data-dir` moves it.
+`images` directory, `daemon.lock`, and the small log files `daemon.log` (and
+`daemon.log.1`) and `hook-errors.log`. `SCREENSENSE_DATA` or `--data-dir`
+moves it. The two logs hold event names, counts, durations and fixed error
+words, never window titles, screen text, command lines or prompt text;
+`hook-errors.log` is kept under 64 KiB and `daemon.log` is rotated at 1 MiB.
 
 ScreenSense does not record keystrokes, the clipboard, audio, or windows that
 are not in the foreground.
+
+**One place outside the data directory (Linux only).** To run `tesseract`,
+the daemon writes the captured window, *before* redaction, as an uncompressed
+PPM file named `screensense-ocr-<pid>-<n>.ppm` in the system temporary
+directory (`TMPDIR`, usually `/tmp`), with mode `0600`, and deletes it as soon
+as tesseract returns. If the daemon is killed in that moment, the file stays
+until you delete it. It is created only for windows that passed the privacy
+tier check. On Windows the image goes to the OCR API in memory.
 
 **The data is not encrypted.** On Linux the directory is set to mode `0700`; on
 Windows it relies on the permissions of your user profile. Any program running
@@ -162,10 +173,20 @@ no image), and the window is remembered as sensitive (see below).
   * payment-card numbers that pass the Luhn check and an issuer-prefix check;
   * Taiwan (ROC) national ID numbers that pass their checksum.
 
-Frames with fewer than `capture.min_text_chars` (20) recognised characters are
-also dropped: there is too little text to verify that the frame is safe. A
-consequence is that without a working OCR engine no frame is stored at all;
-only the window timeline is.
+Frames with fewer than `capture.min_text_chars` (20) characters are also
+dropped: there is too little text to verify that the frame is safe. The count
+is taken on the recognised text after soft redaction (so a masked e-mail
+address counts as `[email]`, not as the address), with leading and trailing
+whitespace removed; every other character counts the same, spaces and line
+breaks included. A dropped frame stores nothing and does not mark the window.
+
+Without a working OCR engine no frame is stored at all, because a frame that
+cannot be checked is not kept. That covers a missing `tesseract` on Linux, an
+OCR language that Windows does not have, and `capture.ocr = false`. The window
+timeline is still recorded; `screensense status` says "no OCR engine" and why.
+`capture.enabled = false` has the same effect on screen content (no looks, so
+no text, no image, no errors found on screen), but the window timeline and
+shell commands are still recorded.
 
 ### Soft hits: masked, frame kept
 
@@ -230,9 +251,25 @@ The Windows probe has not been run on real hardware yet; see
 
 ## Sensitive-window memory
 
-When a hard hit drops a frame, that window (app plus title) is remembered and
-treated as Hidden from then on, including after a restart. The mark is stored
-in the database as a hash of the app name and title, not the title itself.
+When a hard hit drops a frame (a hard redaction rule, a sensitive-text pattern
+or two sensitive keywords), that window is marked. From then on a window with
+the same app and title is treated as Hidden, including after a restart: its
+title is not stored and it is not captured. Before hashing, the app name is
+lower-cased without directory and `.exe`, and the title loses invisible
+characters, notification counts such as `(3) ` and extra spaces, so `(3) Inbox`
+and `Inbox` are the same window. The mark is stored in the database as a hash
+(`config.sensitive.<hash>`), not as the title.
+
+At the moment of the hit, every stored frame and error (and its image) of that
+exact app and title is deleted. Spans already in the timeline keep the title
+they had, and frames of the same app under a different title are not touched:
+the mark is for that title only. A browser tab or document with another title
+is classified afresh.
+
+The retroactive purge below does not consult marks and does not clear them.
+Neither does `purge --all`. A mark goes only when you delete the database's
+`config.sensitive.*` rows or the data directory. Dropping a frame for
+*too little text* does not mark the window.
 
 ## Shell commands
 
@@ -248,10 +285,14 @@ place, and neither are `screensense …` commands.
 Tightening a rule deletes matching history; it does not merely hide it.
 
 * The effective rule set (built-in plus yours) has a hash. The daemon compares
-  it with the stored one when it starts and when it reloads the configuration;
-  if it differs, every stored span, frame, error and command is re-checked
-  against the current rules.
-* `screensense purge` runs the same check on demand.
+  it with the stored one when it starts and, while it runs, within about 10
+  seconds of a change to the config file; if it differs (or none is stored
+  yet), every stored span, frame, error and command is re-checked against the
+  current rules. The new hash is stored after the purge succeeded, so a crash
+  half-way re-runs it.
+* `screensense purge` runs the same check on demand, whether or not the hash
+  changed. It works without the daemon, using the rules of the config file as
+  it is now.
 * A window that is now Hidden loses its stored title, frames, errors and
   images. One that is now Title only loses its frames and images. A frame or
   error whose text a new rule would mask or reject is deleted, because the
@@ -259,8 +300,9 @@ Tightening a rule deletes matching history; it does not merely hide it.
   differently is deleted.
 * Image files are deleted from disk together with their rows.
 
-In addition, everything is checked against the current rules again each time
-it is read for a digest or a tool result.
+In addition, rules are applied again when stored data is read for a digest or
+a tool result, so a window that is now Hidden or title-only is shown as such
+even before a purge has run.
 
 Loosening a rule never brings anything back, and never widens what an old
 record shows.
@@ -277,10 +319,15 @@ tools. A pause is a request stored in the database and honoured by the daemon.
 screensense purge --all
 ```
 
-deletes every span, frame, error, command, insight and session, removes all
-images and compacts the database file. It keeps two things on purpose: the
-stored rules hash and the hashed sensitive-window marks, so that windows found
-sensitive earlier stay hidden.
+asks you to type `yes` (without a terminal it refuses unless you add `--yes`),
+then deletes every span, frame, error, command, insight and session, removes
+all images, drops the other bookkeeping rows (the daemon's heartbeat and any
+pause or stop request) and compacts the database file. It keeps your config
+file and, in the database, the `config.*` rows: the stored rules hash and the
+hashed sensitive-window marks, so that windows found sensitive earlier stay
+hidden. It does not remove `daemon.log`, `hook-errors.log` or a stray OCR temp
+file in the system temporary directory. A running daemon goes on recording
+afterwards.
 
 To remove every trace, stop the daemon and delete the data directory:
 
@@ -294,6 +341,18 @@ rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/screensense"
 
 `screensense setup --remove` takes the hook or MCP entry out of your AI tools,
 and `screensense autostart off` removes the sign-in entry.
+
+## What `doctor --capture` prints
+
+`screensense doctor --capture` captures the foreground window once, runs OCR on
+it and prints a report that is meant to be pasted into a bug report. It stores
+nothing. The application name is always printed. The window title is printed
+only when the window is classified Full; for title-only and hidden windows it
+prints `(hidden by privacy rules)` and makes no capture. It prints at most
+three recognised lines, with soft hits masked, and prints none of them if the
+text trips a content check. Read the report before you paste it: the lines
+come from your screen, and anything the OCR read that no rule recognises is
+shown as read.
 
 ## What leaves the machine
 

@@ -68,14 +68,19 @@ error lines are all treated as attacker-influenced. The local model's answer
 
 * Every screen-derived string is sanitised before it is shown to a model:
   invisible and format characters are removed, URLs are reduced to
-  `[url:host]`, `javascript:` / `data:` style schemes are neutralised, angle
-  brackets and backticks are replaced by look-alike characters, whitespace is
-  collapsed and every line is length-capped.
-* It is placed between markers that carry a random per-call id, preceded by a
-  sentence saying that the content is data and not instructions. `<<<` and
-  `>>>` are removed from the content so it cannot close the fence.
-* Nothing screen-derived is placed outside the fence, including in MCP error
-  messages.
+  `[url:host]`, `javascript:` / `data:` style schemes are neutralised, `<` and
+  `>` are replaced by the look-alikes `‹` and `›` and backticks by
+  apostrophes (so `<<<` cannot appear in the content), whitespace is collapsed
+  and every line is length-capped. The characters `|`, `{`, `}` and `\` are
+  kept.
+* It is placed between markers that carry a random per-call id (8 hex digits,
+  32 bits, from a randomly seeded hasher; it is not a cryptographic generator), preceded by a sentence
+  saying that the content is data and not instructions. Because the content
+  cannot contain `<<<` or `>>>`, it cannot close or forge a marker.
+* Nothing screen-derived is placed outside the fence in what is handed to a
+  model, including MCP error messages. The one human-facing exception is the
+  report of `screensense doctor --capture`, which is meant to be read by you
+  (see below).
 * ScreenSense never executes a command, never opens a URL and never follows
   anything it read on screen.
 * It makes no network connection, except, when you enable the analyzer, to the
@@ -83,8 +88,14 @@ error lines are all treated as attacker-influenced. The local model's answer
   address unless `analyzer.allow_remote = true`; proxies and redirects are not
   followed and no credentials are sent.
 * Privacy rules fail closed: an unknown tier reads as Hidden, an unknown
-  browser state is not captured, an unparseable config file means built-in
-  defaults (never "no rules"), and user rules can only add to built-in ones.
+  browser state is not captured, no OCR engine means nothing is captured, an
+  unparseable config file means built-in defaults (never "no rules"), and user
+  rules can only add to built-in ones.
+* The programs it starts are fixed: `tesseract` (Linux, for OCR) and
+  `notify-send` (Linux, for notifications). It does not run anything it read
+  on screen.
+* Neither log file (`daemon.log`, `hook-errors.log`) holds window titles,
+  screen text, command lines or prompt text.
 
 ## Known limitations
 
@@ -104,6 +115,21 @@ on ScreenSense.
   and title; secrets by pattern. A site that is not on a list, a secret
   without a recognisable shape, or text the OCR engine misread is not caught.
   A secret that OCR misreads is neither detected nor blacked out in the image.
+* **While a config file does not parse, only the built-in rules are in
+  force.** Your own additions (hidden apps, regexes, keywords) are ignored
+  until the file is fixed, and a running daemon keeps recording under the
+  built-in rules. The problem is shown by `status`, `doctor` and
+  `config check`; the daemon reloads the file about every 10 seconds.
+* **On Linux the unredacted window is briefly on disk.** To run `tesseract`
+  the daemon writes the captured window, before redaction, to a `0600` PPM
+  file in the system temporary directory and deletes it when tesseract
+  returns. A daemon killed at that moment leaves the file behind. The rule
+  that only redacted data reaches disk therefore holds for the data directory,
+  not for this temporary file. Windows OCR gets the image in memory.
+* **`doctor --capture` prints recognised text without a fence.** It shows at
+  most three lines, soft hits masked, and nothing if the text trips a content
+  check; it prints the window title only for windows recorded in full. Read it
+  before you paste it into an issue.
 * **The digest leaves the machine with your prompt** if your AI tool uses a
   remote model. ScreenSense filters it; it does not control where the tool
   sends it.
