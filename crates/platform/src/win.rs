@@ -200,17 +200,21 @@ impl Platform for WinPlatform {
         let plan =
             plan_capture(window, frame).map_err(|why| PlatformError::WindowGone(why.into()))?;
 
-        // PrintWindow addresses only this HWND, never the desktop DC.
-        match render(hwnd, &plan) {
-            Ok(bgra) => {
-                if let Some(rgba) = bgra_to_rgba_crop(&bgra, &plan) {
-                    if !is_uniform(&rgba) {
-                        return Ok(image_from(&plan, rgba));
+        // Both PrintWindow modes address only this HWND, never the desktop DC.
+        // Our remote-session fixture reports success with uniform pixels in
+        // full-content mode. Retry the documented default on the same window.
+        for flags in [PW_RENDERFULLCONTENT, PRINT_WINDOW_FLAGS(0)] {
+            match render(hwnd, &plan, flags) {
+                Ok(bgra) => {
+                    if let Some(rgba) = bgra_to_rgba_crop(&bgra, &plan) {
+                        if !is_uniform(&rgba) {
+                            return Ok(image_from(&plan, rgba));
+                        }
                     }
                 }
+                Err(RenderError::PrintFailed) => {}
+                Err(RenderError::Os(msg)) => return Err(PlatformError::Os(msg)),
             }
-            Err(RenderError::PrintFailed) => {}
-            Err(RenderError::Os(msg)) => return Err(PlatformError::Os(msg)),
         }
 
         Err(PlatformError::WindowGone(
@@ -504,7 +508,11 @@ enum RenderError {
 /// 32-bpp BGRA (`plan.win_w * plan.win_h * 4` bytes). Every GDI object is
 /// released by the guards on every path; drop order is the reverse of
 /// declaration (selection undone, bitmap, memory DC, window DC).
-fn render(hwnd: HWND, plan: &CapturePlan) -> std::result::Result<Vec<u8>, RenderError> {
+fn render(
+    hwnd: HWND,
+    plan: &CapturePlan,
+    flags: PRINT_WINDOW_FLAGS,
+) -> std::result::Result<Vec<u8>, RenderError> {
     let os = |m: &str| RenderError::Os(m.to_string());
     let window_dc = WindowDc::acquire(hwnd).ok_or_else(|| os("GetWindowDC failed"))?;
     let mem_dc = MemDc::create(window_dc.hdc).ok_or_else(|| os("CreateCompatibleDC failed"))?;
@@ -514,7 +522,7 @@ fn render(hwnd: HWND, plan: &CapturePlan) -> std::result::Result<Vec<u8>, Render
         Selected::select(mem_dc.0, &bitmap).ok_or_else(|| os("SelectObject failed"))?;
 
     // SAFETY: live window handle and memory DC. Never read the desktop DC.
-    if !unsafe { PrintWindow(hwnd, mem_dc.0, PW_RENDERFULLCONTENT) }.as_bool() {
+    if !unsafe { PrintWindow(hwnd, mem_dc.0, flags) }.as_bool() {
         return Err(RenderError::PrintFailed);
     }
 
@@ -795,6 +803,12 @@ mod tests {
                         bottom: 220,
                     };
                     FillRect(dc, &bounds, HBRUSH(GetStockObject(WHITE_BRUSH).0));
+                    // Leave room for the real DWM frame crop on desktop versions
+                    // that include an invisible border around a popup window.
+                    bounds.left = 20;
+                    bounds.top = 20;
+                    bounds.right = 880;
+                    bounds.bottom = 200;
                     SetTextColor(dc, COLORREF(0));
                     let font = CreateFontW(
                         36,
