@@ -29,7 +29,7 @@ jobs:
       - name: Install tesseract and Xvfb
         run: |
           sudo apt-get update
-          sudo apt-get install -y tesseract-ocr xvfb fonts-noto-cjk libfontconfig1-dev
+          sudo apt-get install -y tesseract-ocr xvfb fonts-noto-cjk libfontconfig1-dev libxkbcommon-x11-0
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -135,7 +135,19 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -j1 -- -D warnings
 
       - name: Tests
-        run: cargo test --workspace --locked -j1 -- --test-threads=1
+        env:
+          SCREENSENSE_NO_SCREEN: "1"
+        run: |
+          # Review checkpoint: collect BOTH independent failures before exiting.
+          # The following repair restores the ordinary full-workspace test step.
+          $PSNativeCommandUseErrorActionPreference = $false
+          cargo test --locked -j1 -p screensense-gui review_regression -- --nocapture --test-threads=1
+          $regressionExit = $LASTEXITCODE
+          cargo build --locked -j1 -p screensense-gui
+          if ($LASTEXITCODE -ne 0) { throw 'GUI build failed before dialog regression' }
+          target\debug\screensense-gui.exe --verify-ui "$env:RUNNER_TEMP\gui-review-red"
+          $dialogExit = $LASTEXITCODE
+          if ($regressionExit -ne 0 -or $dialogExit -ne 0) { throw "Review regressions: data=$regressionExit dialog=$dialogExit" }
 
       - name: Build GUI
         run: cargo build --locked -j1 -p screensense-gui
@@ -144,6 +156,34 @@ jobs:
         env:
           SCREENSENSE_NO_SCREEN: "1"
         run: target\debug\screensense-gui.exe --verify-ui "$env:RUNNER_TEMP\gui-software-fixture"
+
+      - name: Package the tested Windows GUI candidate
+        shell: pwsh
+        run: |
+          $candidate = Join-Path $env:RUNNER_TEMP 'windows-gui-tested'
+          New-Item -ItemType Directory -Path $candidate | Out-Null
+          Copy-Item -LiteralPath 'target/debug/screensense-gui.exe' -Destination $candidate
+          Copy-Item -LiteralPath 'crates/gui/LICENSE' -Destination (Join-Path $candidate 'LICENSE-GUI-GPL-3.0.txt')
+          Copy-Item -LiteralPath 'LICENSE' -Destination (Join-Path $candidate 'LICENSE-CORE-MIT.txt')
+          Copy-Item -LiteralPath 'THIRD-PARTY-NOTICES.md','docs/GUI.md' -Destination $candidate
+          Copy-Item -LiteralPath "$env:RUNNER_TEMP/gui-software-fixture/verification.json" -Destination $candidate
+          git archive --format=tar --output="$candidate/source.tar" HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Corresponding source archive failed' }
+          $sha = (git rev-parse HEAD).Trim()
+          $exeHash = (Get-FileHash -LiteralPath "$candidate/screensense-gui.exe" -Algorithm SHA256).Hash.ToLowerInvariant()
+          @{ commit=$sha; executable_sha256=$exeHash; profile='debug'; purpose='tested GUI candidate, not a release'; source="https://github.com/stevenke1981/screensense/tree/$sha" } |
+            ConvertTo-Json | Set-Content -LiteralPath "$candidate/BUILD-INFO.json" -Encoding utf8
+          Get-ChildItem -LiteralPath $candidate -File | Sort-Object Name | ForEach-Object {
+            '{0}  {1}' -f (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.Name
+          } | Set-Content -LiteralPath "$candidate/SHA256SUMS.txt" -Encoding utf8
+
+      - name: Tested Windows GUI executable and corresponding source
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-gui-tested
+          path: ${{ runner.temp }}/windows-gui-tested/
+          retention-days: 7
+          if-no-files-found: error
 
       - name: GUI verification evidence
         if: always()

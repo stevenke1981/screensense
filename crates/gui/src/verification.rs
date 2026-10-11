@@ -77,15 +77,38 @@ fn exercise(ui: &AppWindow, service: &mut Service, output: &Path) -> Result<()> 
     {
         bail!("Enter activated the destructive confirmation");
     }
-    ui.window()
-        .dispatch_event(slint::platform::WindowEvent::KeyPressed {
-            text: slint::platform::Key::Escape.into(),
-        });
-    if wipe_calls.get() != 0
-        || ui.get_confirm_kind() != 0
-        || service.store.history_counts()?[1] != 1
-    {
-        bail!("Escape did not cancel deletion safely");
+    for backwards in [false, true] {
+        ui.set_confirm_kind(2);
+        if backwards {
+            ui.window()
+                .dispatch_event(slint::platform::WindowEvent::KeyPressed {
+                    text: slint::platform::Key::Shift.into(),
+                });
+        }
+        ui.window()
+            .dispatch_event(slint::platform::WindowEvent::KeyPressed {
+                text: slint::platform::Key::Tab.into(),
+            });
+        ui.window()
+            .dispatch_event(slint::platform::WindowEvent::KeyReleased {
+                text: slint::platform::Key::Tab.into(),
+            });
+        if backwards {
+            ui.window()
+                .dispatch_event(slint::platform::WindowEvent::KeyReleased {
+                    text: slint::platform::Key::Shift.into(),
+                });
+        }
+        ui.window()
+            .dispatch_event(slint::platform::WindowEvent::KeyPressed {
+                text: slint::platform::Key::Escape.into(),
+            });
+        if wipe_calls.get() != 0
+            || ui.get_confirm_kind() != 0
+            || service.store.history_counts()?[1] != 1
+        {
+            bail!("Escape did not cancel deletion after Tab/Shift+Tab safely");
+        }
     }
     let invalid = "[privacy]\nhidden_title_regex=['[']\n";
     fs::write(&service.config_path, invalid)?;

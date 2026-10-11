@@ -5,7 +5,11 @@ use screensense_core::{
     analyzer, config::Config, digest, paths, privacy::Privacy, purge, store::Store,
 };
 use serde::Serialize;
-use std::{fs, io::Write, path::PathBuf};
+use std::{
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
+};
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Snapshot {
@@ -81,6 +85,15 @@ impl Service {
     /// Called only after the GUI's explicit consequence/activation confirmation.
     /// Invalid files remain editable as their original text, never replaced by defaults.
     pub fn save(&mut self, text: &str, confirmed: bool) -> Result<()> {
+        self.save_with_replace(text, confirmed, |from, to| fs::rename(from, to))
+    }
+
+    fn save_with_replace(
+        &mut self,
+        text: &str,
+        confirmed: bool,
+        replace: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+    ) -> Result<()> {
         if !confirmed {
             bail!("save requires explicit confirmation");
         }
@@ -132,7 +145,7 @@ impl Service {
             // Cancel in-flight work before changing policy. Existing daemon and MCP
             // also compare their loaded config with the current file before writes/output.
             self.store.invalidate_privacy()?;
-            fs::rename(&temp, &self.config_path)?;
+            replace(&temp, &self.config_path)?;
             self.baseline = Some(text.into());
             let privacy = Privacy::new(&cfg.privacy, &cfg.apps);
             purge::purge_if_rules_changed(&self.store, &privacy)
@@ -271,6 +284,100 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let s = Service::open(t.path().join("data"), t.path().join("config.toml")).unwrap();
         (t, s)
+    }
+    fn history_fixture(s: &Service, legacy_policy: bool) -> String {
+        let text = "language='en'\n[capture]\nenabled=false\n[analyzer]\nenabled=false\n";
+        fs::write(&s.config_path, text).unwrap();
+        let mut cfg = Config::from_toml(text).unwrap();
+        if legacy_policy {
+            cfg.privacy.hidden_apps.push("legacy-fixture.exe".into());
+        }
+        let privacy = Privacy::new(&cfg.privacy, &cfg.apps);
+        purge::purge_if_rules_changed(&s.store, &privacy).unwrap();
+        s.store
+            .frame_insert(&NewFrame {
+                ts: screensense_core::now(),
+                app: "fixture.exe".into(),
+                title: "Owned historical fixture".into(),
+                text: "Synthetic historical frame".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        s.store
+            .insight_insert(&screensense_core::types::Insight {
+                ts: screensense_core::now(),
+                trigger: "fixture".into(),
+                model: "synthetic-no-model-call".into(),
+                doing: "Synthetic retained analysis".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        text.into()
+    }
+    #[test]
+    fn review_regression_open_and_refresh_preserve_history_and_block_old_views() {
+        let (_t, mut s) = service();
+        history_fixture(&s, true);
+        let before = s.store.history_counts().unwrap();
+        assert_eq!(before[4], 1);
+        for reload in [true, false] {
+            let view = s.snapshot(reload).unwrap();
+            assert_eq!(
+                s.store.history_counts().unwrap(),
+                before,
+                "opening/refreshing must not delete existing analysis"
+            );
+            assert_eq!(
+                view.counts, [0; 5],
+                "pending privacy review must hide old counts"
+            );
+        }
+    }
+    #[test]
+    fn review_regression_language_only_save_preserves_analysis() {
+        let (_t, mut s) = service();
+        let text = history_fixture(&s, false);
+        s.read_draft().unwrap();
+        let before = s.store.history_counts().unwrap();
+        s.save(&text.replace("'en'", "'zh'"), true).unwrap();
+        assert_eq!(
+            s.store.history_counts().unwrap(),
+            before,
+            "changing only language must not invalidate retained analysis"
+        );
+    }
+    #[test]
+    fn review_regression_rename_failure_preserves_config_history_and_revision() {
+        let (_t, mut s) = service();
+        let text = history_fixture(&s, false);
+        s.read_draft().unwrap();
+        let before = s.store.history_counts().unwrap();
+        let revision = s.store.privacy_revision().unwrap();
+        let changed = format!("{text}\n[privacy]\nhidden_apps=['fixture.exe']\n");
+        let result = s.save_with_replace(&changed, true, |_, _| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "synthetic atomic-replace failure",
+            ))
+        });
+        assert!(result.is_err());
+        assert_eq!(fs::read_to_string(&s.config_path).unwrap(), text);
+        assert_eq!(
+            s.store.history_counts().unwrap(),
+            before,
+            "failed replacement must not delete retained analysis"
+        );
+        assert_eq!(s.store.privacy_revision().unwrap(), revision);
+    }
+    #[test]
+    fn review_regression_cancel_preserves_configuration_and_analysis() {
+        let (_t, mut s) = service();
+        let text = history_fixture(&s, false);
+        s.read_draft().unwrap();
+        let before = s.store.history_counts().unwrap();
+        assert!(s.save(&text.replace("'en'", "'zh'"), false).is_err());
+        assert_eq!(fs::read_to_string(&s.config_path).unwrap(), text);
+        assert_eq!(s.store.history_counts().unwrap(), before);
     }
     #[test]
     fn startup_refresh_and_short_pause_preserve_controls() {
