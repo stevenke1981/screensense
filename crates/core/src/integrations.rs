@@ -5,10 +5,10 @@
 //! change and replace it atomically. The prompt hook's I/O (`parse_hook_input`,
 //! `hook_output`) lives here too so the CLI's `hook` command is a thin wrapper.
 //!
-//! Known limitation: `serde_json` is built without `preserve_order`, so a file we
-//! modify is re-serialised with its object keys sorted alphabetically (array order,
-//! values and every other entry are preserved). The timestamped backup made before
-//! each modification is what makes that acceptable.
+//! A file we modify is re-serialised (2-space indent). The workspace builds
+//! `serde_json` with `preserve_order`, so key order, array order and every other
+//! entry survive; number spelling and escapes are normalised. A timestamped backup
+//! is made before each modification.
 
 use std::fs;
 use std::io::Write;

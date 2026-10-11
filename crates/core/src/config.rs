@@ -61,7 +61,7 @@ pub struct CaptureConfig {
     /// Re-read an unchanged window at least this often (0 disables).
     pub refresh_s: f64,
     pub ocr: bool,
-    /// BCP-47 tag for Windows OCR (`zh-Hant-TW`), tesseract code on Linux (`eng+chi_tra`). Empty = system default.
+    /// BCP-47 tag for Windows OCR (`zh-Hant-TW`), tesseract code on Linux (`eng+chi_tra`). Empty = the user's display language on Windows, `eng` on Linux.
     pub ocr_language: String,
     pub ocr_max_chars: usize,
     /// Frames with less recognised text than this are dropped: too little to verify they are safe.
@@ -206,7 +206,10 @@ pub struct ErrorsConfig {
 
 impl Default for ErrorsConfig {
     fn default() -> Self {
-        ErrorsConfig { dedupe_s: 90.0, repeat_window_s: 900.0 }
+        ErrorsConfig {
+            dedupe_s: 90.0,
+            repeat_window_s: 900.0,
+        }
     }
 }
 
@@ -262,7 +265,10 @@ pub struct WatchConfig {
 
 impl Default for WatchConfig {
     fn default() -> Self {
-        WatchConfig { min_dwell_s: 45.0, min_gap_s: 20.0 }
+        WatchConfig {
+            min_dwell_s: 45.0,
+            min_gap_s: 20.0,
+        }
     }
 }
 
@@ -316,7 +322,11 @@ impl Config {
                 // Tolerate a UTF-8 BOM (Notepad on Windows writes one).
                 let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
                 match Config::from_toml(text) {
-                    Ok(config) => Loaded { config, path: path.to_path_buf(), error: None },
+                    Ok(config) => Loaded {
+                        config,
+                        path: path.to_path_buf(),
+                        error: None,
+                    },
                     Err(e) => Loaded {
                         config: Config::default(),
                         path: path.to_path_buf(),
@@ -324,9 +334,11 @@ impl Config {
                     },
                 }
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                Loaded { config: Config::default(), path: path.to_path_buf(), error: None }
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Loaded {
+                config: Config::default(),
+                path: path.to_path_buf(),
+                error: None,
+            },
             Err(e) => Loaded {
                 config: Config::default(),
                 path: path.to_path_buf(),
@@ -427,7 +439,10 @@ mod tests {
 
     #[test]
     fn template_parses_to_defaults() {
-        assert_eq!(Config::from_toml(Config::template()).unwrap(), Config::default());
+        assert_eq!(
+            Config::from_toml(Config::template()).unwrap(),
+            Config::default()
+        );
     }
 
     #[test]
@@ -437,7 +452,8 @@ mod tests {
 
     #[test]
     fn values_are_clamped() {
-        let cfg = Config::from_toml("poll_interval_s = 0.0\n[digest]\nmax_tokens = 99999\n").unwrap();
+        let cfg =
+            Config::from_toml("poll_interval_s = 0.0\n[digest]\nmax_tokens = 99999\n").unwrap();
         assert_eq!(cfg.poll_interval_s, 0.2);
         assert_eq!(cfg.digest.max_tokens, 2400);
     }

@@ -20,7 +20,10 @@ impl Platform for NullPlatform {
     }
 
     fn capabilities(&self) -> Capabilities {
-        Capabilities { notes: vec![self.note.clone()], ..Capabilities::default() }
+        Capabilities {
+            notes: vec![self.note.clone()],
+            ..Capabilities::default()
+        }
     }
 
     fn foreground(&mut self) -> Option<WindowInfo> {

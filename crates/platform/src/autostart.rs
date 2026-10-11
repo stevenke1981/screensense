@@ -73,6 +73,8 @@ pub fn status() -> Option<String> {
     #[cfg(not(windows))]
     {
         let text = std::fs::read_to_string(desktop_file()?).ok()?;
-        text.lines().find_map(|l| l.strip_prefix("Exec=")).map(str::to_string)
+        text.lines()
+            .find_map(|l| l.strip_prefix("Exec="))
+            .map(str::to_string)
     }
 }

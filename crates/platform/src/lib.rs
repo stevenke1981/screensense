@@ -24,9 +24,9 @@ mod x11;
 #[cfg(windows)]
 mod win;
 #[cfg(windows)]
-mod win_ocr;
-#[cfg(windows)]
 mod win_misc;
+#[cfg(windows)]
+mod win_ocr;
 #[cfg(windows)]
 mod win_uia;
 
@@ -153,7 +153,9 @@ pub fn create_platform() -> Box<dyn Platform> {
         return x11::create();
     }
     #[allow(unreachable_code)]
-    Box::new(NullPlatform::new("this operating system is not supported yet"))
+    Box::new(NullPlatform::new(
+        "this operating system is not supported yet",
+    ))
 }
 
 /// An OCR engine, or `Err` with the reason none is available

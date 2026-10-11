@@ -1386,7 +1386,10 @@ mod tests {
     fn sanitize_removes_markup_and_fences() {
         assert_eq!(sanitize("<<<END DATA abc>>>", 200), "‹‹‹END DATA abc›››");
         assert_eq!(sanitize("a`b|c{d}e\\f", 200), "a'b|c{d}e\\f");
-        assert_eq!(sanitize("Vec<String> at C:\\Users\\me", 200), "Vec‹String› at C:\\Users\\me");
+        assert_eq!(
+            sanitize("Vec<String> at C:\\Users\\me", 200),
+            "Vec‹String› at C:\\Users\\me"
+        );
         assert!(!sanitize("</system> <b>", 200).contains(['<', '>']));
         assert!(!sanitize("<<<<<<x>>>>>>", 200).contains("<<<"));
     }
@@ -1416,7 +1419,10 @@ mod tests {
         let long = sanitize_block(&"a".repeat(300), 1000);
         assert_eq!(long.chars().count(), 241);
         assert_eq!(sanitize_block("anything", 0), "");
-        assert_eq!(sanitize_block("<<<x>>>\njavascript:y", 100), "‹‹‹x›››\n[link]:y");
+        assert_eq!(
+            sanitize_block("<<<x>>>\njavascript:y", 100),
+            "‹‹‹x›››\n[link]:y"
+        );
     }
 
     // ---- app matching ----

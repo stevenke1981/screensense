@@ -33,7 +33,8 @@ const STRONG_PATTERNS: &[&str] = &[
     r"Traceback \(most recent call last\)",
     r"^[\w.]*(?:Error|Exception): .{3,}",
     // Rust
-    r"^error(?:\[E\d{4}\])?: ",
+    // Tolerates OCR misreads of the brackets and of zero: `errorLE0308]:`, `error[EO308]:`.
+    r"^error(?:.?E[0-9O]{4}.?)?: ",
     r"^thread '.*' panicked at",
     r"^panicked at",
     r"^test .+ \.\.\. FAILED\b",
@@ -770,5 +771,22 @@ mod tests {
         assert_eq!(score(ErrorSource::Ocr, &weak, 1, f64::INFINITY), 0);
         assert!(score(ErrorSource::Shell, &[], 1, f64::NAN) <= 100);
         assert_eq!(score(ErrorSource::Ocr, &weak, 1, -5.0), 20);
+    }
+
+    #[test]
+    fn rustc_error_survives_ocr_misreads() {
+        for line in [
+            "error[E0308]: mismatched types",
+            "errorLE0308]: mismatched types",
+            "error[EO308]: mismatched types",
+            "error: could not compile `demo`",
+        ] {
+            assert_eq!(
+                find_errors(line, AppClass::Editor),
+                vec![line.to_string()],
+                "{line}"
+            );
+        }
+        assert!(find_errors("errors: none", AppClass::Terminal).is_empty());
     }
 }

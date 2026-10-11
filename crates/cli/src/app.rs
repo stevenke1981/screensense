@@ -33,7 +33,13 @@ impl App {
             .with_context(|| format!("cannot open the database in {}", data_dir.display()))?;
         let privacy = Privacy::new(&loaded.config.privacy, &loaded.config.apps);
         let lang = Lang::resolve(&loaded.config.language);
-        Ok(App { data_dir, loaded, store, privacy, lang })
+        Ok(App {
+            data_dir,
+            loaded,
+            store,
+            privacy,
+            lang,
+        })
     }
 
     pub fn cfg(&self) -> &Config {
@@ -62,7 +68,12 @@ impl App {
                 self.loaded.path.display()
             ));
         }
-        out.extend(self.privacy.warnings().iter().map(|w| format!("privacy rule skipped: {w}")));
+        out.extend(
+            self.privacy
+                .warnings()
+                .iter()
+                .map(|w| format!("privacy rule skipped: {w}")),
+        );
         out
     }
 }

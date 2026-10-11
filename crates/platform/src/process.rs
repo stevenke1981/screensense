@@ -13,7 +13,17 @@ pub fn pid_alive(pid: u32) -> bool {
     }
     #[cfg(target_os = "linux")]
     {
-        return Path::new(&format!("/proc/{pid}")).exists();
+        // A child that already exited but was not reaped still has a /proc entry
+        // (state Z); it must not count as running. The state is the first field
+        // after the parenthesised command name, which may itself contain spaces
+        // or parentheses, so split at the LAST ')'.
+        return match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(stat) => match stat.rsplit_once(')') {
+                Some((_, rest)) => !matches!(rest.trim_start().chars().next(), Some('Z' | 'X')),
+                None => true,
+            },
+            Err(_) => Path::new(&format!("/proc/{pid}")).exists(),
+        };
     }
     #[allow(unreachable_code)]
     {
@@ -42,7 +52,10 @@ pub fn spawn_detached(exe: &Path, args: &[&str], log: Option<&Path>) -> std::io:
         use std::process::{Command, Stdio};
         let (out, err) = match log {
             Some(path) => {
-                let f = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+                let f = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)?;
                 (Stdio::from(f.try_clone()?), Stdio::from(f))
             }
             None => (Stdio::null(), Stdio::null()),
@@ -60,7 +73,10 @@ pub fn spawn_detached(exe: &Path, args: &[&str], log: Option<&Path>) -> std::io:
     #[allow(unreachable_code)]
     {
         let _ = (exe, args, log);
-        Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "spawn_detached"))
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "spawn_detached",
+        ))
     }
 }
 
@@ -80,15 +96,25 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ss-spawn-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let log = dir.join("out.log");
-        let pid = spawn_detached(Path::new("/bin/sh"), &["-c", "echo hello-detached"], Some(&log)).unwrap();
+        let pid = spawn_detached(
+            Path::new("/bin/sh"),
+            &["-c", "echo hello-detached"],
+            Some(&log),
+        )
+        .unwrap();
         assert!(pid > 0);
         for _ in 0..50 {
-            if std::fs::read_to_string(&log).map(|s| s.contains("hello-detached")).unwrap_or(false) {
+            if std::fs::read_to_string(&log)
+                .map(|s| s.contains("hello-detached"))
+                .unwrap_or(false)
+            {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(40));
         }
-        assert!(std::fs::read_to_string(&log).unwrap().contains("hello-detached"));
+        assert!(std::fs::read_to_string(&log)
+            .unwrap()
+            .contains("hello-detached"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
