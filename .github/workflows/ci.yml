@@ -1,0 +1,129 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    name: Linux (fmt, clippy, tests, X11 end to end)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tesseract and Xvfb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tesseract-ocr xvfb
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace
+
+      # The tests below talk to a real X server. Without SCREENSENSE_X11_TEST=1
+      # they return early, which is why `cargo test --workspace` above passes
+      # on a machine without a display.
+      - name: Build the demo window
+        run: cargo build -p screensense-platform --example demo_window
+
+      - name: X11 backend end to end (Xvfb)
+        env:
+          SCREENSENSE_X11_TEST: "1"
+        run: >
+          xvfb-run -a -s "-screen 0 1280x800x24"
+          cargo test -p screensense-platform --test x11_e2e -- --nocapture --test-threads=1
+
+      # Daemon end to end: capture -> OCR -> privacy -> store, in the same
+      # virtual display. NOTE: if no test with this path exists, cargo runs
+      # zero tests and this step passes without proving anything; check the
+      # "running N tests" line in the log.
+      - name: Daemon end to end (Xvfb)
+        env:
+          SCREENSENSE_X11_TEST: "1"
+        run: >
+          xvfb-run -a -s "-screen 0 1280x800x24"
+          cargo test -p screensense daemon::tests::x11_end_to_end -- --nocapture --test-threads=1
+
+  windows:
+    name: Windows (clippy, tests, smoke)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace
+
+      # ---- Smoke: run the real binary on a real Windows machine ----------
+      # A hosted runner may have no interactive desktop and no OCR language
+      # pack, so `doctor --capture` is allowed to fail. Its output is the
+      # evidence: read it in the job log.
+      - name: "Smoke: doctor --capture (may fail on a headless runner)"
+        continue-on-error: true
+        run: cargo run --release -p screensense -- doctor --capture
+
+      - name: "Smoke: config check"
+        run: cargo run --release -p screensense -- config check
+
+      # The script must at least parse, in PowerShell 7 and in Windows
+      # PowerShell 5.1. This step fails the job if it does not.
+      - name: "Smoke: shell-init powershell parses (PowerShell 7)"
+        shell: pwsh
+        run: |
+          $script = & target\release\screensense.exe shell-init powershell | Out-String
+          if ($LASTEXITCODE -ne 0) { throw "shell-init powershell exited with $LASTEXITCODE" }
+          if ([string]::IsNullOrWhiteSpace($script)) { throw "shell-init powershell printed nothing" }
+          [scriptblock]::Create($script) | Out-Null
+          Write-Host "parsed $($script.Length) characters"
+
+      - name: "Smoke: shell-init powershell parses (Windows PowerShell 5.1)"
+        shell: powershell
+        run: |
+          $script = & target\release\screensense.exe shell-init powershell | Out-String
+          if ($LASTEXITCODE -ne 0) { throw "shell-init powershell exited with $LASTEXITCODE" }
+          if ([string]::IsNullOrWhiteSpace($script)) { throw "shell-init powershell printed nothing" }
+          [scriptblock]::Create($script) | Out-Null
+          Write-Host "parsed $($script.Length) characters"
+
+  msrv:
+    name: MSRV (Rust 1.89)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.89
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check
+        run: cargo check --workspace --all-targets

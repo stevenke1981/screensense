@@ -153,7 +153,7 @@ Last 20 min (oldest first):
 · 13:51–13:58 chrome.exe — rust - lifetime of borrowed value (7m)
 Errors:
 ! 13:57 shell exit 101 (x2): cargo test
-  error[E0502]: cannot borrow `self.buf` as mutable because it is also borrowed as immutable
+  error[E0502]: cannot borrow 'self.buf' as mutable because it is also borrowed as immutable
 Latest image: C:\Users\me\AppData\Local\screensense\images\2026-10-10\135803_114.jpg (13:58 Code.exe)
 <<<END DATA 3f9a1c2e>>>
 (More: screensense now | recent 60 | search <text> — or the screen_* MCP tools)
@@ -163,7 +163,9 @@ Latest image: C:\Users\me\AppData\Local\screensense\images\2026-10-10\135803_114
   screen text cannot close the fence.
 * All screen-derived strings pass `sanitize`: invisible/format characters
   removed, URLs reduced to `[url:host]`, script-ish schemes neutralised,
-  markup characters stripped, one line, length-capped.
+  angle brackets and backticks replaced by look-alike characters (`‹` `›` `'`,
+  so code stays readable but no tag, fence marker or code span can be formed),
+  one line, length-capped.
 * **Token budget.** Sections are added in priority order (now → errors →
   timeline → insight → image path) until `max_tokens` (estimated: ASCII ≈ 4
   chars/token, everything else 1 char/token) would be exceeded.
@@ -181,10 +183,10 @@ Latest image: C:\Users\me\AppData\Local\screensense\images\2026-10-10\135803_114
 |---|---|
 | `screen_now` | the full digest |
 | `screen_timeline {minutes}` | window timeline |
-| `screen_errors {minutes}` | recent errors with their lines |
+| `screen_errors {minutes, limit}` | recent errors with their lines |
 | `screen_search {query, minutes, limit}` | frames whose text matches, with snippets |
 | `screen_text {frame_id?, max_chars}` | redacted text of one frame (latest by default) |
-| `screen_commands {minutes}` | shell commands with exit codes |
+| `screen_commands {minutes, limit}` | shell commands with exit codes |
 | `screen_pause {minutes}` / `screen_resume` | stop/resume recording |
 
 Every result that contains screen-derived text is fenced like the digest.

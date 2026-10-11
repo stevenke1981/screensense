@@ -1,0 +1,106 @@
+name: Release
+
+# Pushing a tag such as v0.1.0 builds both archives and publishes a GitHub
+# release. Running the workflow by hand builds the same archives and keeps
+# them as workflow artifacts only.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+          # An older Ubuntu, so the binary needs an older glibc.
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked -p screensense --target ${{ matrix.target }}
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $name = "screensense-${{ matrix.target }}"
+          New-Item -ItemType Directory -Force -Path "dist/$name" | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/screensense.exe" "dist/$name/"
+          Copy-Item README.md, README.zh-TW.md, LICENSE, THIRD-PARTY-NOTICES.md "dist/$name/"
+          Compress-Archive -Path "dist/$name/*" -DestinationPath "dist/$name.zip" -Force
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -eu
+          name="screensense-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp "target/${{ matrix.target }}/release/screensense" "dist/$name/"
+          cp README.md README.zh-TW.md LICENSE THIRD-PARTY-NOTICES.md "dist/$name/"
+          tar -C "dist/$name" -czf "dist/$name.tar.gz" .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: screensense-${{ matrix.target }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: Checksums and release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Write SHA256SUMS
+        run: |
+          set -eu
+          cd dist
+          sha256sum screensense-*.zip screensense-*.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      # Manual runs: keep everything as one artifact, publish nothing.
+      - uses: actions/upload-artifact@v4
+        if: github.ref_type != 'tag'
+        with:
+          name: screensense-release-files
+          path: dist/*
+          if-no-files-found: error
+
+      - uses: softprops/action-gh-release@v2
+        if: github.ref_type == 'tag'
+        with:
+          files: |
+            dist/screensense-*.zip
+            dist/screensense-*.tar.gz
+            dist/SHA256SUMS
+          fail_on_unmatched_files: true
+          generate_release_notes: true
