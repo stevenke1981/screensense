@@ -569,7 +569,7 @@ impl Store {
 
     /// Delete an image file named by a stored relative path. Refuses anything that
     /// could leave the data dir; a missing file is fine. Failed removal is reported
-    /// without revealing the stored path; callers preserve references for retry.
+    /// without revealing the stored path; purge retries unreferenced images.
     fn remove_image(&self, rel: &str) -> crate::Result<u64> {
         let Some(dir) = &self.data_dir else {
             return Ok(0);
@@ -881,26 +881,29 @@ impl Store {
             .query_row("SELECT image FROM frames WHERE id = ?1", [id], |r| r.get(0))
             .optional()?
             .flatten();
-        if let Some(rel) = image {
-            self.remove_image(&rel)?;
-        }
         tx.execute("DELETE FROM frames WHERE id = ?1", [id])?;
         tx.commit()?;
+        if let Some(rel) = image {
+            if let Err(e) = self.remove_image(&rel) {
+                self.scrub_deleted()?;
+                return Err(e);
+            }
+        }
         Ok(())
     }
 
-    /// Delete the image before clearing its reference; failed removal remains retryable.
+    /// Clear the image reference even when file removal fails; purge retries orphans.
     pub fn frame_drop_image(&self, id: i64) -> crate::Result<()> {
         let tx = self.immediate()?;
         let image: Option<String> = tx
             .query_row("SELECT image FROM frames WHERE id = ?1", [id], |r| r.get(0))
             .optional()?
             .flatten();
+        tx.execute("UPDATE frames SET image = NULL WHERE id = ?1", [id])?;
+        tx.commit()?;
         if let Some(rel) = image {
             self.remove_image(&rel)?;
         }
-        tx.execute("UPDATE frames SET image = NULL WHERE id = ?1", [id])?;
-        tx.commit()?;
         Ok(())
     }
 
@@ -1224,30 +1227,30 @@ impl Store {
     /// Delete every frame and error (and frame images) for this exact app + title.
     /// Returns the number of rows (frames + errors) removed.
     pub fn forget_window(&self, app: &str, title: &str) -> crate::Result<u64> {
-        let removed = {
-            let tx = self.immediate()?;
-            let images: Vec<String> = {
-                let mut st = tx.prepare_cached(
-                    "SELECT image FROM frames WHERE app = ?1 AND title = ?2 AND image IS NOT NULL",
-                )?;
-                let rows = st.query_map(params![app, title], |r| r.get::<_, String>(0))?;
-                rows.collect::<rusqlite::Result<Vec<_>>>()?
-            };
-            let frames = tx.execute(
-                "DELETE FROM frames WHERE app = ?1 AND title = ?2",
-                params![app, title],
+        let tx = self.immediate()?;
+        let images: Vec<String> = {
+            let mut st = tx.prepare_cached(
+                "SELECT image FROM frames WHERE app = ?1 AND title = ?2 AND image IS NOT NULL",
             )?;
-            let errors = tx.execute(
-                "DELETE FROM errors WHERE app = ?1 AND title = ?2",
-                params![app, title],
-            )?;
-            for rel in &images {
-                self.remove_image(rel)?;
-            }
-            tx.commit()?;
-            (frames + errors) as u64
+            let rows = st.query_map(params![app, title], |r| r.get::<_, String>(0))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
         };
-        Ok(removed)
+        let frames = tx.execute(
+            "DELETE FROM frames WHERE app = ?1 AND title = ?2",
+            params![app, title],
+        )?;
+        let errors = tx.execute(
+            "DELETE FROM errors WHERE app = ?1 AND title = ?2",
+            params![app, title],
+        )?;
+        tx.commit()?;
+        for rel in &images {
+            if let Err(e) = self.remove_image(rel) {
+                self.scrub_deleted()?;
+                return Err(e);
+            }
+        }
+        Ok((frames + errors) as u64)
     }
 
     pub fn window_record_counts(&self, app: &str, title: &str) -> crate::Result<(u64, u64)> {
@@ -1371,7 +1374,7 @@ impl Store {
             tx.commit()?;
         }
         st.images_deleted += doomed.len() as u64;
-        self.remove_orphans(now, &mut st)?;
+        self.remove_orphans(now, &mut st, false)?;
         self.remove_empty_day_dirs();
 
         // Housekeeping is best effort: a busy checkpoint must not fail the sweep.
@@ -1382,9 +1385,19 @@ impl Store {
         Ok(st)
     }
 
+    /// Retry image removal after committed privacy deletion. The write lock prevents
+    /// deleting a freshly written capture before its frame reference commits.
+    pub fn retry_image_deletions(&self) -> crate::Result<()> {
+        let tx = self.immediate()?;
+        let mut stats = SweepStats::default();
+        self.remove_orphans(crate::now(), &mut stats, true)?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Delete files under `<data>/images` that no frame references and that are
     /// older than 10 minutes.
-    fn remove_orphans(&self, now: Ts, st: &mut SweepStats) -> crate::Result<()> {
+    fn remove_orphans(&self, now: Ts, st: &mut SweepStats, force: bool) -> crate::Result<()> {
         let Some(dir) = &self.data_dir else {
             return Ok(());
         };
@@ -1407,7 +1420,7 @@ impl Store {
         };
         for f in files {
             let Some(mtime) = f.mtime else { continue };
-            if now - mtime < ORPHAN_MIN_AGE_S {
+            if !force && now - mtime < ORPHAN_MIN_AGE_S {
                 continue;
             }
             let Ok(rel) = f.path.strip_prefix(dir) else {
@@ -1503,15 +1516,31 @@ mod tests {
             .unwrap();
         assert!(s.frame_delete(id).is_err());
         assert!(
-            s.frame_get(id).unwrap().is_some(),
-            "failed removal retains its retry reference"
+            s.frame_get(id).unwrap().is_none(),
+            "failed file removal does not retain history"
         );
         fs::remove_dir(dir.path().join("images/a.jpg/blocked")).unwrap();
         fs::remove_dir(dir.path().join("images/a.jpg")).unwrap();
         fs::write(dir.path().join("images/a.jpg"), b"synthetic image").unwrap();
-        s.frame_delete(id).unwrap();
+        s.retry_image_deletions().unwrap();
         assert!(s.frame_get(id).unwrap().is_none());
         assert!(!dir.path().join("images/a.jpg").exists());
+    }
+
+    #[test]
+    fn release_regression_failed_image_delete_never_retains_sensitive_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(dir.path()).unwrap();
+        fs::create_dir_all(dir.path().join("images/a.jpg/blocked")).unwrap();
+        let id = s
+            .frame_insert(&frame_with_image(1.0, "wezterm", "fixture", "images/a.jpg"))
+            .unwrap();
+        assert!(s.forget_window("wezterm", "fixture").is_err());
+        assert!(
+            s.frame_get(id).unwrap().is_none(),
+            "file errors must not restore deleted history"
+        );
+        assert!(s.frames_search("some text", 0.0, 10).unwrap().is_empty());
     }
 
     #[test]
@@ -2548,7 +2577,7 @@ mod tests {
         assert!(s.frame_delete(f1).is_err());
         assert!(s.frame_drop_image(f2).is_err());
         assert!(outside.exists());
-        assert!(s.frame_delete(f2).is_err());
+        s.frame_delete(f2).unwrap();
         assert!(s.frame_delete(f3).is_err());
         // forget_window and sweep (age + frames) are guarded too
         s.frame_insert(&frame_with_image(4.0, "w", "t", "../outside.txt"))

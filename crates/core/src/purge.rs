@@ -99,6 +99,7 @@ pub fn purge(store: &Store, privacy: &Privacy) -> crate::Result<PurgeStats> {
             }
         }
     }
+    store.retry_image_deletions()?;
     store.scrub_deleted()?;
     store.meta_set(HASH_KEY, &privacy.rules_hash())?;
     Ok(st)
