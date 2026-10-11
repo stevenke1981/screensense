@@ -20,6 +20,10 @@ anyhow = "1"
 thiserror = "2"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
+[workspace.lints.clippy]
+# Added in clippy 1.99. `chunks_exact(4)` over pixel buffers is clear as written.
+chunks_exact_to_as_chunks = "allow"
+
 [profile.release]
 opt-level = 3
 lto = "thin"

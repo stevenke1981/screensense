@@ -85,3 +85,8 @@ test is reported as skipped.
   assumptions is in `docs/WINDOWS-VERIFICATION.md`.
 - PowerShell shell integration (`shell.rs`): written, never run.
 - `.github/workflows/ci.yml` and `release.yml`: written, never run on GitHub.
+
+## Next
+
+`docs/OPEN-ISSUES.md` lists the defects an independent review found; none is
+fixed yet. Start there. The privacy items come before anything else.

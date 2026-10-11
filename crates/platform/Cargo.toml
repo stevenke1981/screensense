@@ -42,3 +42,6 @@ windows = { version = "0.61", features = [
     "Data_Xml_Dom",
     "UI_Notifications",
 ] }
+
+[lints]
+workspace = true
