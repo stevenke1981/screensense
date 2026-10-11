@@ -61,6 +61,22 @@ Each needs a test that fails before the fix. Ordered by priority.
     row when the user goes idle. Add `span_set_end`.
 18. `PurgeStats` does not count rows removed through `forget_window`.
 
+## CI on Windows (first run, 2026-10-11)
+
+Linux and MSRV jobs pass. On `windows-latest` the 95 unit tests of the cli
+crate pass and 27 of 30 integration tests in `crates/cli/tests/cli.rs` pass.
+Three fail and stop the run before the core and platform test binaries and the
+smoke steps (`doctor --capture`, PowerShell parse check) are reached:
+
+- `doctor_reports_without_leaking_hidden_titles` (cli.rs:2017)
+- `doctor_explains_common_failures` (cli.rs:2100)
+- `shell_init_prints_the_snippet` (cli.rs:1604)
+
+Not yet diagnosed. Likely test assumptions that only hold on Linux (the tests
+unset `DISPLAY` to get the null backend, which does nothing on Windows; a path
+comparison with backslashes), but confirm on a Windows machine before changing
+them. Run `cargo test --workspace --no-fail-fast` there to see everything.
+
 ## Accepted and documented, not planned
 
 - `stream` lines are tagged `[screen data]` per line rather than fenced.
