@@ -4,12 +4,12 @@
 
 ScreenSense 是一支在背景執行的小程式：它會留意你正在用哪個視窗、視窗上有哪些文字，把經過隱私過濾的短期紀錄存在本機的 SQLite 檔案裡，再整理成精簡的摘要交給 AI 程式助理。助理可以透過 hook 在每次送出提示時自動取得，也可以透過 MCP 伺服器在需要時查詢。整個工具只有一個 Rust 執行檔 `screensense`，可搭配 OpenCode、Claude Code、Codex CLI、Gemini CLI，以及任何支援 MCP 的工具。
 
-> **目前狀態：v0.1.0，早期版本。安裝前請先讀完這一段。**
+> **狀態：v0.1.0。啟用擷取前請先閱讀限制。**
 >
-> - **Linux／X11**：本儲存庫的測試會在虛擬顯示器（Xvfb）裡，讓真正的背景程式對真正的 X 伺服器運作。測試會檢查視窗有被追蹤、擷取、經 OCR 辨識並儲存（一筆視窗區段、一個含截圖的畫面、一筆錯誤紀錄），背景程式能正常停止，以及 `doctor --capture` 會擷取一般視窗、但不會擷取隱私規則隱藏的視窗。摘要、MCP 與 CLI 的檢視，則是對測試自己填入的資料庫做測試，而不是對 Xvfb 中的背景程式寫入的資料列做測試。
-> - **Windows**：後端（視窗擷取、Windows OCR、私密瀏覽偵測、快顯通知）已針對 Windows 目標通過型別檢查與 lint，但在發行當下**作者尚未在實體機器上實際執行過**。如果你願意試用，請先執行 `screensense doctor --capture`，並把結果回報給我們。尚待確認的假設列在 [docs/WINDOWS-VERIFICATION.md](docs/WINDOWS-VERIFICATION.md)。CI 工作流程已設定為在 Windows 執行環境上建置、測試並做冒煙測試；目前還沒有執行過任何一次 CI。
-> - **PowerShell 的 shell 整合**：尚未實測。CI 已設定為檢查產生的腳本能否在 PowerShell 7 與 Windows PowerShell 5.1 解析，但解析成功不等於實際執行過。
-> - **macOS 與 Wayland**：不支援。在 Wayland 上背景程式仍可執行，但無法觀察視窗；shell 整合與 MCP 伺服器照常運作。
+> - **Linux／X11：** daemon、擷取、OCR、儲存、停止及 `doctor --capture` 通過 Xvfb 端對端驗證；digest、MCP 與 CLI 另有以測試資料庫為基礎的測試。
+> - **Windows 10/11 x64：** CI 與本機測試已通過。本機與 GitHub Windows runner 的自建非啟用式視窗擷取/OCR fixture 均辨識出七個預期字詞，記憶體內 OCR 也已通過。這些測試不代表一般應用程式、私人瀏覽 UI Automation、通知或即時 agent 工作階段已驗證。詳見 [docs/WINDOWS-VERIFICATION.md](docs/WINDOWS-VERIFICATION.md)。
+> - **PowerShell：**產生的 shell-init 指令可由 Windows PowerShell 5.1 與 PowerShell 7 解析；尚未實際安裝 profile 或執行 hooks。
+> - **Wayland 與 macOS：**不支援畫面觀察。Linux/X11 backend 需要 X11 工作階段；macOS 尚無畫面觀察 backend。
 
 ## 運作方式
 
@@ -18,7 +18,7 @@ ScreenSense 是一支在背景執行的小程式：它會留意你正在用哪�
 3. 畫面有變化時（或不論有無變化，每 3 分鐘一次）才用 OCR 辨識文字。文字看起來像機密時整個畫面直接丟棄；電子郵件、電話號碼這類資訊則在文字中遮蔽，若有保留截圖，也會在截圖上塗黑。**沒有 OCR 引擎就不會擷取任何內容**：視窗仍會列在時間軸裡，但不會儲存螢幕文字，也不會儲存截圖。
 4. 結果寫入 `screensense.db`（SQLite，可全文搜尋）。錯誤訊息會被偵測、去除重複並評分。
 5. `screensense hook`（由你的助理在每次提示時呼叫）或 `screen_*` MCP 工具，把這些紀錄整理成一小段有圍欄標記的文字。在同一段對話中，hook 第一次送出完整區塊，之後只送出自上一次提示以來有變化的部分，沒有變化時則什麼都不送。過了 30 分鐘，或提示本身提到螢幕時（「this error」、「screenshot」、「畫面」等），會再送一次完整區塊。
-6. 舊資料會定期刪除（背景程式執行期間每小時一次）；隱私規則收緊時，符合新規則的既有紀錄也會一併刪除：背景程式啟動時、設定檔變更後約 10 秒內，以及執行 `screensense purge` 時。
+6. 資料會依保留期限定期清理（daemon 運行時每小時一次）。隱私規則收緊後，系統會重新檢查並刪除不再允許保留的歷史資料：daemon 啟動時、設定變更後（daemon 約每 2 秒檢查一次），或執行 `screensense purge` 時。
 
 助理實際收到的內容長這樣：
 
@@ -43,44 +43,44 @@ Latest image: C:\Users\me\AppData\Local\screensense\images\2026-10-10\135803_114
 
 ## 安裝
 
-在第一個版本標籤推送之前不會有任何發行版；在那之前請從原始碼建置。
+v0.1.0 的壓縮檔與校驗碼請見 [Releases](https://github.com/stevenke1981/screensense/releases)。Windows 壓縮檔未簽章。
 
-**Windows 10/11（x64）。** 從 [Releases](https://github.com/stevenke1981/screensense/releases) 下載 `screensense-x86_64-pc-windows-msvc.zip`，解壓縮到 `PATH` 裡的某個目錄。或者執行 [`install.ps1`](install.ps1)：它會下載最新發行版、驗證 SHA-256、解壓縮到 `%LOCALAPPDATA%\Programs\screensense`，並把該目錄加入使用者的 `PATH`。文字辨識使用 Windows 內建的 OCR，系統必須裝有支援 OCR 的語言。
+**Windows 10/11（x64）。** 從 [Releases](https://github.com/stevenke1981/screensense/releases) 下載 `screensense-x86_64-pc-windows-msvc.zip`，解壓縮至 PATH 中的目錄。或執行 [`install.ps1`](install.ps1)：下載最新發行包、驗證 SHA-256、解壓至 `%LOCALAPPDATA%\Programs\screensense`，並將目錄加入使用者 PATH。文字辨識使用 Windows 內建 OCR，需要系統已安裝支援 OCR 的語言。
 
 **Linux（x86_64，X11 工作階段）。** 下載 `screensense-x86_64-unknown-linux-gnu.tar.gz`（發行工作流程在 Ubuntu 22.04 上建置），把 `screensense` 放到 `PATH` 中；或執行 [`install.sh`](install.sh)（會驗證 SHA-256，安裝到 `~/.local/bin`）。文字辨識需要 `tesseract` 程式：`sudo apt install tesseract-ocr`（視需要加裝語言包，例如 `tesseract-ocr-chi-tra`）。沒有它就不會儲存任何螢幕文字。背景程式透過 `DISPLAY` 環境變數找到你的視窗，所以請在圖形工作階段內啟動它。
 
 **從原始碼建置**（需要 Rust 1.89 以上，以及用來編譯內建 SQLite 的 C 編譯器）：
 
 ```
-cargo install --git https://github.com/stevenke1981/screensense screensense
+cargo install --git https://github.com/stevenke1981/screensense --tag v0.1.0 --locked -j1 screensense
 ```
 
 兩支安裝腳本都不會啟動背景程式、不會修改任何 AI 工具的設定檔，也不會設定開機自動啟動。這些都是下面要你自己明確執行的步驟。
 
 ## 快速開始
 
+先解壓縮後在 PowerShell 執行唯讀檢查；以下命令不會擷取畫面或啟動 daemon：
+
+```powershell
+./screensense.exe --help
+./screensense.exe config path
+./screensense.exe config show
+./screensense.exe config check
+./screensense.exe doctor
 ```
-screensense doctor --capture   # 檢查這台機器上哪些功能可用：平台、擷取、OCR
-screensense daemon start       # 在背景開始記錄
-screensense setup              # 連接這台機器上找得到的所有 AI 工具
-screensense autostart on       # 選用：登入時自動啟動背景程式
-screensense status             # 是否在執行？（沒有執行時結束碼為 3）
-```
 
-`doctor --capture` 會擷取一次前景視窗並對它做 OCR，然後印出隱私規則如何分類這個視窗（「recorded as: full / title only / hidden, because ...」）、擷取的大小與耗時、OCR 的耗時與找到的行數與字數，以及最多三行辨識出的文字（軟性命中已遮蔽）。它不會儲存任何東西。只有在視窗會被完整記錄時才會印出視窗標題；否則顯示 `(hidden by privacy rules)`，而且不會進行擷取。應用程式名稱一律會印出。如果辨識出的文字觸發內容檢查，則完全不會顯示。這份報告本來就是要貼到問題回報裡的，但貼出之前還是請先自己檢查一遍。
+先閱讀設定與隱私限制，再自行選擇是否啟用。Linux 使用者請在 X11 工作階段透過終端機執行 `screensense --help` 等命令。Windows 執行檔需要 Microsoft Visual C++ v14 x64 runtime；若缺少 `VCRUNTIME140.dll`，請安裝[官方 x64 Redistributable](https://aka.ms/vc14/vc_redist.x64.exe)，詳見[支援的最新版本](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170)。此需求尚未在乾淨 Windows 作業系統上驗證。
 
-用 `daemon start` 啟動時，背景程式會把紀錄寫到資料目錄（見 `screensense config path`）中的 `daemon.log`；`daemon run` 寫到終端機，而由 `autostart` 啟動的背景程式不會有紀錄檔。紀錄內容是啟動與停止事件、數量、耗時和錯誤種類，絕不包含視窗標題、螢幕文字或指令。紀錄檔超過 1 MiB 時，下次執行 `daemon start` 會把它移成 `daemon.log.1`。
+`doctor --capture` 會即時擷取前景視窗並執行 OCR，但不儲存結果。若要持續記錄，請明確執行 `screensense daemon start`；要連接 agent，另行執行 `screensense setup <tool>`。自動啟動與 shell profile 整合是分開的選用步驟，詳見下文。
 
-選用的 shell 整合會回報每一道指令的結束碼、工作目錄與執行時間。請在你的 shell 啟動檔加上一行：
+啟動 daemon 後，紀錄會寫入資料目錄中的 `daemon.log`。選用的 shell 整合會記錄指令、結束碼、工作目錄與耗時；PowerShell 指令僅確認能解析，尚未實際安裝 profile 或執行 hooks。只有在你要啟用 shell 命令記錄時，才把對應的一行加到 shell 啟動檔：
 
-| Shell | 檔案 | 要加的一行 |
+| Shell | 檔案 | 要加入的指令 |
 |---|---|---|
 | bash | `~/.bashrc` | `eval "$(screensense shell-init bash)"` |
 | zsh | `~/.zshrc` | `eval "$(screensense shell-init zsh)"` |
-| fish | `~/.config/fish/config.fish` | `screensense shell-init fish \| source` |
-| PowerShell | `$PROFILE` | `Invoke-Expression (& screensense shell-init powershell \| Out-String)` |
-
-每道指令執行完畢後，這段片段會在背景執行隱藏指令 `screensense record`（它不會出現在 `--help` 中，你也不需要自己輸入）。它會儲存清理過的指令列、結束碼、工作目錄與執行時間；符合隱藏規則或含有機密的指令會被整筆丟棄，記錄暫停期間也不會記下任何東西。結束碼不為 0 時也會成為一筆錯誤紀錄，但 Ctrl-C 與 SIGTERM 除外。以空白開頭的指令不會被回報，`screensense …` 指令本身也不會。bash 需要開啟歷史紀錄功能。這段片段內含印出它的那個 `screensense` 執行檔的完整路徑。不帶參數執行 `screensense shell-init` 會列出各個 shell 要加的那一行。
+| fish | `~/.config/fish/config.fish` | `screensense shell-init fish | source` |
+| PowerShell | `$PROFILE` | `Invoke-Expression (& screensense shell-init powershell | Out-String)` |
 
 ## 搭配你的 AI 助理
 
@@ -165,10 +165,10 @@ hook 絕不會大聲失敗：不論出了什麼問題，它都以 0 結束，並
 | `screen_search` | `query`（必填）、`minutes`（1440）、`limit`（8） | 符合的畫面與片段；子字串比對，中日韓文字也適用 |
 | `screen_text` | `frame_id`（最新）、`max_chars`（4000，範圍 200–20000） | 某個畫面遮蔽後的文字 |
 | `screen_commands` | `minutes`（60）、`limit`（30） | shell 指令與結束碼、工作目錄、執行時間 |
-| `screen_pause` | `minutes`（30） | 暫停記錄這麼久 |
-| `screen_resume` | 無 | 繼續記錄 |
+| `screen_pause` | `minutes`（30） | 至少暫停這麼久；後續要求只能延長期限 |
 
-凡是包含螢幕來源文字的結果，都會和摘要一樣加上圍欄標記。MCP 伺服器只在啟動時讀取一次設定。
+MCP 伺服器提供七個工具，不包含 resume。`screen_pause` 可以要求暫停或延長目前期限，但不能縮短期限或提前恢復；只有使用者能執行 `screensense resume`。每次 MCP request 都會重新載入設定並依目前規則清理資料後才回傳。`stream` 約每秒重新載入設定；設定無效或清理失敗時會停止輸出，恢復後不會補播封鎖期間的事件。
+
 
 ## 隱私
 
@@ -179,9 +179,9 @@ hook 絕不會大聲失敗：不論出了什麼問題，它都以 0 結束，並
 - **硬性遮蔽**：辨識出的文字若含有 API 金鑰或權杖、私密金鑰、JWT、通過 Luhn 檢查的卡號、通過檢查碼驗證的中華民國身分證字號，或兩個敏感關鍵字，整個畫面都會被丟棄（這一次擷取不會儲存任何東西），而且該視窗（應用程式加標題）從此視為隱藏，重新啟動後也一樣。它已儲存的畫面與錯誤紀錄會被刪除。
 - **軟性遮蔽**：電子郵件、電話號碼、資料庫連線網址，以及 `--password` 這類參數，會在文字中遮蔽，**並且**依 OCR 的文字框在截圖上塗黑。只有 OCR 辨識得出來的文字才遮得到。
 - **文字太少**：辨識出的文字少於 20 個字元（遮蔽之後才計算；每個字元算法相同，換行也算）的畫面會被丟棄，因為內容太少，無法確認它是安全的。
-- **回溯清除**：規則變更時，已儲存的歷史紀錄會重新檢查，不該再保留的部分會從磁碟刪除。這會在背景程式啟動時、背景程式執行期間設定檔變更後約 10 秒內，以及你執行 `screensense purge` 時發生。
+- **回溯清理：** 隱私規則變更時，會重新檢查已儲存的歷史並刪除不再符合規則的資料，也會清除衍生的 analyzer insight。daemon 啟動時會清理；運行中約每 2 秒檢查設定並在規則變更後清理；也可執行 `screensense purge`。
 - **預設保留期限**：截圖 6 小時且總量最多 300 MB；畫面文字 7 天；視窗時間軸、指令與錯誤 30 天；分析結果 90 天。
-- 用 `screensense pause [MIN]` **暫停**；用 `screensense purge --all` 刪除全部歷史紀錄，但會保留你的設定、已儲存的規則雜湊值，以及被標記為敏感的視窗清單。你自己加的規則只會**疊加**：設定檔裡的任何內容都無法關閉內建規則。
+- **暫停並清除本機歷史：** 執行 `screensense pause`，再執行 `screensense purge --all`。purge 會保留設定、pause/stop 控制狀態與敏感視窗標記，不會清除暫停或停止狀態；若仍處於暫停或停止狀態，就維持該狀態。否則，仍在運行的 daemon 可能繼續記錄。
 
 ## 安全模型與限制
 
@@ -221,15 +221,15 @@ hidden_title_regex = ["ClientName", "payroll"]   # 只記應用程式名稱
 title_only_apps = ["MyGame.exe"]                 # 絕不擷取畫面
 ```
 
-執行中的背景程式大約每 10 秒檢查一次設定檔。檔案有變更時，新的設定與隱私規則會立即生效，不必重新啟動，新規則禁止保留的歷史紀錄也會被刪除。OCR 引擎是在背景程式啟動時選定的：變更 `capture.ocr` 或 `capture.ocr_language` 之後，請執行 `screensense daemon restart`。每次 hook 呼叫都會重新讀取設定檔；執行中的 MCP 伺服器則不會。
+運行中的 daemon 約每 2 秒檢查設定。設定與隱私規則變更後會生效，規則改變會觸發回溯清理，不必重新啟動。OCR 引擎在 daemon 啟動時選擇；若更改 `capture.ocr` 或 `capture.ocr_language`，請執行 `screensense daemon restart`。
 
-每個設定項的預設值與範圍請見 [docs/CONFIG.md](docs/CONFIG.md)。無法解析的設定檔會整份被忽略（改用預設值），並由 `screensense status`、`doctor` 與 `config check` 回報；不認得的設定項會視為錯誤。
+每個設定的預設值與範圍見 [docs/CONFIG.md](docs/CONFIG.md)。無效 TOML、隱私 regex 或空白 redaction pattern 會使隱私規則不可用，並阻止記錄與歷史輸出。診斷指令可能顯示預設值作為說明，但不會以預設值繼續記錄。`screensense status`、`doctor` 與 `config check` 會回報設定錯誤。daemon 約每 2 秒檢查設定；hook 與每次 MCP request 都會重新載入設定並先執行隱私清理。
 
 ## 平台支援
 
 | 平台 | 狀態 |
 |---|---|
-| Windows 10/11 x64 | 已實作；已針對 Windows 目標通過型別檢查與 lint；CI 已設定為建置並測試；**作者尚未在實體機器上執行過**。請見 [docs/WINDOWS-VERIFICATION.md](docs/WINDOWS-VERIFICATION.md)。 |
+| Windows 10/11 x64 | CI 與本機測試通過；本機與 GitHub runner 的合成視窗擷取/OCR fixture 均辨識出七個預期字詞，另有記憶體內 OCR 測試通過。一般應用程式、私人瀏覽 UI Automation、通知與即時 agent 工作階段尚未驗證。詳見 [docs/WINDOWS-VERIFICATION.md](docs/WINDOWS-VERIFICATION.md)。 |
 | Linux，X11 工作階段 | 由本儲存庫的測試在 Xvfb 中測試。OCR 需要 `tesseract`，且背景程式的環境中要有 `DISPLAY`。無法偵測瀏覽器的私密模式，因此瀏覽器預設只記標題。 |
 | Linux，Wayland 工作階段 | 無法觀察視窗。有 XWayland 時只看得到 XWayland 視窗。shell 整合與 MCP 伺服器可用。 |
 | macOS | 不支援。 |
@@ -253,7 +253,7 @@ xvfb-run -a -s "-screen 0 1280x800x24" \
     cargo test -p screensense --test cli x11:: -- --nocapture --test-threads=1
 ```
 
-`.github/workflows/ci.yml` 中的 CI 工作流程已設定為在 Linux 上執行上述指令（另加格式檢查）、在 Windows 上執行 clippy、測試與幾個冒煙測試步驟，並檢查最低 Rust 版本。它目前還沒有執行過。
+`.github/workflows/ci.yml` 的 CI 工作流程已在候選提交上通過：Linux format/clippy/tests/Xvfb end-to-end、Windows clippy/tests/smoke 步驟，以及 Rust 1.89 最低版本檢查。發行檔案的最終同提交需再通過發行工作流程的檢查。
 
 ## 與 desktop-sense 的差異
 

@@ -36,6 +36,8 @@ jobs:
             os: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -56,10 +58,17 @@ jobs:
           $name = "screensense-${{ matrix.target }}"
           New-Item -ItemType Directory -Force -Path "dist/$name" | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/screensense.exe" "dist/$name/"
-          Copy-Item README.md, README.zh-TW.md, LICENSE, THIRD-PARTY-NOTICES.md, SECURITY.md "dist/$name/"
-          New-Item -ItemType Directory -Force -Path "dist/$name/docs" | Out-Null
-          Copy-Item docs/PRIVACY.md, docs/CONFIG.md, docs/WINDOWS-VERIFICATION.md "dist/$name/docs/"
-          "commit=${{ github.sha }}`nversion=${{ github.ref_name }}`ntarget=${{ matrix.target }}" | Set-Content "dist/$name/BUILD-INFO.txt" -Encoding utf8
+          Copy-Item README.md, README.zh-TW.md, LICENSE, THIRD-PARTY-NOTICES.md, SECURITY.md, CHANGELOG.md, install.ps1, install.sh "dist/$name/"
+          Copy-Item docs "dist/$name/docs" -Recurse
+          New-Item -ItemType Directory -Force -Path "dist/$name/skills/screen" | Out-Null
+          Copy-Item skills/screen/SKILL.md "dist/$name/skills/screen/"
+          cargo metadata --format-version 1 --locked --filter-platform '${{ matrix.target }}' | Set-Content dist/dependency-metadata.json -Encoding utf8
+          if ($LASTEXITCODE -ne 0) { throw "dependency metadata failed" }
+          python scripts/collect_licenses.py dist/dependency-metadata.json "dist/$name/LICENSES"
+          if ($LASTEXITCODE -ne 0) { throw "dependency license collection failed" }
+          $version = (& "target/${{ matrix.target }}/release/screensense.exe" --version) -replace '^screensense\s+', ''
+          if ($LASTEXITCODE -ne 0) { throw "binary version check failed" }
+          "commit=${{ github.sha }}`nversion=$version`nref=${{ github.ref_name }}`ntarget=${{ matrix.target }}`nsignature=unsigned" | Set-Content "dist/$name/BUILD-INFO.txt" -Encoding utf8
           Compress-Archive -Path "dist/$name/*" -DestinationPath "dist/$name.zip" -Force
 
       - name: Package (Linux)
@@ -69,11 +78,25 @@ jobs:
           name="screensense-${{ matrix.target }}"
           mkdir -p "dist/$name"
           cp "target/${{ matrix.target }}/release/screensense" "dist/$name/"
-          cp README.md README.zh-TW.md LICENSE THIRD-PARTY-NOTICES.md SECURITY.md "dist/$name/"
-          mkdir -p "dist/$name/docs"
-          cp docs/PRIVACY.md docs/CONFIG.md docs/WINDOWS-VERIFICATION.md "dist/$name/docs/"
-          printf 'commit=%s\nversion=%s\ntarget=%s\n' '${{ github.sha }}' '${{ github.ref_name }}' '${{ matrix.target }}' > "dist/$name/BUILD-INFO.txt"
+          cp README.md README.zh-TW.md LICENSE THIRD-PARTY-NOTICES.md SECURITY.md CHANGELOG.md install.ps1 install.sh "dist/$name/"
+          cp -R docs "dist/$name/docs"
+          mkdir -p "dist/$name/skills/screen"
+          cp skills/screen/SKILL.md "dist/$name/skills/screen/"
+          cargo metadata --format-version 1 --locked --filter-platform '${{ matrix.target }}' > dist/dependency-metadata.json
+          python3 scripts/collect_licenses.py dist/dependency-metadata.json "dist/$name/LICENSES"
+          version=$("target/${{ matrix.target }}/release/screensense" --version | cut -d ' ' -f 2)
+          printf 'commit=%s\nversion=%s\nref=%s\ntarget=%s\nsignature=unsigned\n' '${{ github.sha }}' "$version" '${{ github.ref_name }}' '${{ matrix.target }}' > "dist/$name/BUILD-INFO.txt"
           tar -C "dist/$name" -czf "dist/$name.tar.gz" .
+
+      # Extract the actual archive into a path with spaces and exercise only
+      # isolated CLI/history/MCP fixtures. Never observe the runner's desktop.
+      - name: Clean archive smoke (Windows)
+        if: runner.os == 'Windows'
+        run: python scripts/release_smoke.py "dist/screensense-${{ matrix.target }}.zip" --commit "${{ github.sha }}" --output "dist/package-smoke-${{ matrix.target }}.json"
+
+      - name: Clean archive smoke (Linux)
+        if: runner.os == 'Linux'
+        run: python3 scripts/release_smoke.py "dist/screensense-${{ matrix.target }}.tar.gz" --commit "${{ github.sha }}" --output "dist/package-smoke-${{ matrix.target }}.json"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -81,6 +104,7 @@ jobs:
           path: |
             dist/*.zip
             dist/*.tar.gz
+            dist/package-smoke-*.json
           if-no-files-found: error
 
   publish:
@@ -88,6 +112,10 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -97,7 +125,7 @@ jobs:
         run: |
           set -eu
           cd dist
-          sha256sum screensense-*.zip screensense-*.tar.gz > SHA256SUMS
+          sha256sum screensense-*.zip screensense-*.tar.gz package-smoke-*.json > SHA256SUMS
           cat SHA256SUMS
 
       # Manual runs: keep everything as one artifact, publish nothing.
@@ -114,6 +142,7 @@ jobs:
           files: |
             dist/screensense-*.zip
             dist/screensense-*.tar.gz
+            dist/package-smoke-*.json
             dist/SHA256SUMS
           fail_on_unmatched_files: true
-          generate_release_notes: true
+          body_path: docs/RELEASE-NOTES.md

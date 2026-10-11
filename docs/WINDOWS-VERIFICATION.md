@@ -1,70 +1,22 @@
-# Windows verification checklist
+# Windows verification
 
-The Windows backend was written and type-checked from Linux. Each item below is
-an assumption about Windows or the `windows` crate that only a real run can
-confirm. Tick them off on a Windows 10/11 machine; `screensense doctor --capture`
-exercises most of the first two sections.
+Windows verification on runtime-review candidate `b0b01e715cb9e07b64c6f1f85ade40242f574e45` passed local tests and CI. The final release commit SHA is recorded in `BUILD-INFO.txt` and must pass final CI and archive smoke checks. After fresh extraction, the first check is `./screensense.exe --help`; the optimized x64 ZIP also passed CLI/MCP smoke checks on the build host. This was not a clean Windows OS test. This evidence does not establish general application support.
 
-## Capture (`crates/platform/src/win.rs`)
+## Passed
 
-- [ ] `PrintWindow(PW_RENDERFULLCONTENT)` returns a correct, non-black frame for
-      Chrome, Edge, VS Code (Electron), Windows Terminal and a UWP app, also when
-      partly covered. A solid-colour frame is treated as blank and falls back to a
-      screen copy, which only runs for the foreground window.
-- [ ] `GetWindowRect` and `DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS)` are
-      in the same coordinate space once per-monitor DPI awareness is set, so the
-      crop that removes the invisible resize border is aligned (check on a
-      monitor scaled to 150 %).
-- [ ] `GetDIBits` with a negative height yields top-down rows on your GPU/driver.
-- [ ] A 4K window captures in acceptable time and memory.
-- [ ] UWP apps resolve to their real process name, not `ApplicationFrameHost.exe`.
-- [ ] `GetWindowTextW` on a busy foreign window does not stall the sensor.
+The executable imports `VCRUNTIME140.dll` and requires the Microsoft Visual C++ v14 x64 runtime. If missing, install the [official x64 Redistributable](https://aka.ms/vc14/vc_redist.x64.exe); see [Microsoft supported versions](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170). Windows OCR also requires an installed OCR language. The archive is unsigned.
 
-## OCR (`win_ocr.rs`)
+- Windows CI clippy, workspace tests, release smoke checks and PowerShell 5.1/7 shell-init parsing passed. The shell snippet was parsed, not installed into a user profile or exercised after commands.
+- A local native test created a nonactivating synthetic popup window owned by the test process, captured the same HWND using `PrintWindow` (full-content mode with the default-mode retry), ran Windows OCR, found seven expected words, and cleaned up the window. Captured frame: 892×212.
+- A separate native memory-only OCR test passed.
+- The GitHub Windows runner's native synthetic capture/OCR test passed at 900×220 with seven expected words; its memory-only OCR test passed too.
 
-- [ ] `IAsyncOperation::get()` on an MTA thread returns (does not deadlock).
-- [ ] `TryCreateFromUserProfileLanguages` failing falls through to the first
-      available recognizer language.
-- [ ] Word boxes are in the pixel space of the submitted bitmap, including after
-      the downscale for images larger than `MaxImageDimension`.
-- [ ] CJK text arrives one character per "word" and is joined without spaces by
-      the pipeline.
+The capture retry uses only the same HWND and never copies desktop pixels. The local fixture needed 20px text margins because the captured client area was cropped by a 4px DWM border. This is fixture-specific evidence, not a compatibility guarantee.
 
-## Private-browsing probe (`win_uia.rs`)
+## Still unverified
 
-- [ ] An Incognito / InPrivate window is recognised for Chrome, Edge, Brave,
-      Vivaldi and Opera within the limits (400 nodes, depth 10, 600 ms).
-- [ ] A normal window with many tabs still finishes the walk and reports
-      "not private" (at least 30 named elements seen); otherwise every browser
-      window stays title-only, which is safe but loses the feature.
-- [ ] The first probe after a browser starts may be "unknown" (lazy
-      accessibility tree) and a later one succeeds.
-- [ ] The 400 ms UIA connection/transaction timeouts do not break normal calls.
+- Capture/OCR behavior in Chrome, Edge, VS Code, Windows Terminal, UWP apps, covered or minimized windows, multiple DPI scales and 4K windows.
+- Private-browser UI Automation probes for supported browsers, notification toasts, autostart registry behavior and live agent integration.
+- PowerShell hook execution, profile installation, and argument fidelity. Quoted executable paths remain a known hook syntax limitation.
 
-## Notifications, autostart, process (`win.rs`, `win_misc.rs`)
-
-- [ ] A toast appears using the borrowed PowerShell AppUserModelID (it is
-      attributed to "Windows PowerShell").
-- [ ] `autostart on` writes `HKCU\…\Run\ScreenSense` (the command is the full
-      path of the exe followed by `daemon run`) and the daemon starts at
-      sign-in. The binary is a console-subsystem program and nothing hides its
-      console: `daemon start` creates the daemon with `CREATE_NO_WINDOW`, but a
-      process started by the Run key is not, so a console window may appear
-      and stay open. Check this. A daemon started this way has no log file
-      (`daemon run` writes to the console).
-- [ ] `daemon start` survives closing the terminal it was started from
-      (a Job object that kills children on close would defeat it).
-- [ ] `pid_alive` and `daemon stop` behave.
-
-## Shell integration (`crates/core/src/shell.rs`, PowerShell script)
-
-- [ ] `Invoke-Expression (& screensense shell-init powershell | Out-String)` parses
-      in Windows PowerShell 5.1 and PowerShell 7.
-- [ ] Each command is recorded once with a sensible exit code; `$LASTEXITCODE`
-      and the existing prompt are unchanged; no window flashes.
-- [ ] Arguments containing quotes and trailing backslashes arrive intact.
-
-## Integrations
-
-- [ ] `setup claude|codex|gemini|opencode` writes working entries when the
-      executable path contains spaces.
+macOS and Wayland screen observation are unsupported. Linux OCR sends image bytes on stdin to `tesseract`, without a raw PPM temporary file.

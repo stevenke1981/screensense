@@ -55,6 +55,8 @@ The binary links the Rust crates below. The main direct dependencies are:
 **SQLite.** `libsqlite3-sys` compiles the SQLite amalgamation into the binary.
 SQLite is in the public domain.
 
+Each release archive also includes `LICENSES/index.json` and available original `LICENSE`, `NOTICE`, `COPYING` and `COPYRIGHT` texts collected for that archive's target-filtered Cargo dependency set, including build and development dependencies. This collection is not an exact runtime-linked dependency inventory. The online summary below is a concise overview; the per-archive index and texts provide the notices included with that build.
+
 ### Summary by licence
 
 148 crates (transitive, every target platform, from `Cargo.lock` at 0.1.0;
