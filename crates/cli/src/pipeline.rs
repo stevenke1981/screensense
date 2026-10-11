@@ -865,7 +865,7 @@ pub(crate) mod fake {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn release_regression_pause_blocks_inflight_look_before_sensor_tick() {
+    fn release_regression_pause_blocks_queued_look_before_sensor_tick() {
         let mut r = rig();
         r.ocr.show(PLAIN);
         let req = r.request(T0);
@@ -873,6 +873,70 @@ mod tests {
         assert_eq!(r.cap.handle(req, T0), LookResult::Stale);
         assert!(r.frames().is_empty());
         assert!(image_files(&r.data()).is_empty());
+    }
+
+    #[test]
+    fn privacy_control_cancels_ocr_already_running_on_another_connection() {
+        struct BlockingOcr {
+            started: SyncSender<()>,
+            release: Receiver<()>,
+        }
+        impl OcrEngine for BlockingOcr {
+            fn name(&self) -> String {
+                "blocking-ocr(test)".into()
+            }
+            fn recognize(
+                &mut self,
+                _: &screensense_platform::Image,
+            ) -> screensense_platform::Result<Vec<OcrLine>> {
+                self.started.send(()).unwrap();
+                self.release
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .unwrap();
+                Ok(vec![text_line(
+                    0,
+                    "error[E0308]: synthetic type mismatch while building fixture",
+                )])
+            }
+        }
+        for action in ["pause", "wipe"] {
+            let mut r = rig();
+            let data = r.data();
+            let (started_tx, started_rx) = sync_channel(1);
+            let (release_tx, release_rx) = sync_channel(1);
+            r.cap.ocr = Some(Box::new(BlockingOcr {
+                started: started_tx,
+                release: release_rx,
+            }));
+            let request = r.request(T0);
+            let mut cap = r.cap;
+            let worker = std::thread::spawn(move || cap.handle(request, T0));
+            started_rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("OCR has actually started");
+            assert_eq!(r.plat.st().capture_calls, 1);
+            let other = Store::open(&data).unwrap();
+            match action {
+                "pause" => other.set_paused_until(Some(T0 + 60.0)).unwrap(),
+                "wipe" => other.wipe().unwrap(),
+                _ => unreachable!(),
+            }
+            release_tx.send(()).unwrap();
+            assert_eq!(worker.join().unwrap(), LookResult::Stale, "{action}");
+            assert!(
+                r.store.frames_since(0.0, 100).unwrap().is_empty(),
+                "{action}"
+            );
+            assert!(
+                r.store.errors_since(0.0, 100).unwrap().is_empty(),
+                "{action}"
+            );
+            assert!(image_files(&data).is_empty(), "{action}");
+            assert!(
+                r.jobs_rx.try_recv().is_err(),
+                "no stale analyzer job: {action}"
+            );
+        }
     }
 
     #[test]
