@@ -715,6 +715,23 @@ impl Store {
         Ok(())
     }
 
+    /// Agent requests may only extend a pause. Read and update under the same
+    /// write transaction so another connection's longer deadline is preserved.
+    pub fn extend_paused_until(&self, requested: Ts) -> crate::Result<Ts> {
+        if !requested.is_finite() {
+            return Err(crate::Error::other("pause deadline must be finite"));
+        }
+        let tx = self.immediate()?;
+        let existing = self.control()?.paused_until;
+        let until = existing.map_or(requested, |t| t.max(requested));
+        if existing != Some(until) {
+            self.bump_privacy_revision()?;
+            self.meta_set("control.paused_until", &until.to_string())?;
+        }
+        tx.commit()?;
+        Ok(until)
+    }
+
     // ---- spans (foreground-window timeline) ----
 
     /// Insert a span with start == end == `start`.
@@ -1833,6 +1850,34 @@ mod tests {
     }
 
     // ---- spans ----
+
+    #[test]
+    fn agent_pause_preserves_longest_deadline_across_connections() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        store.set_paused_until(Some(3600.0)).unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
+        let workers: Vec<_> = [60.0, 5400.0, 7200.0]
+            .into_iter()
+            .map(|requested| {
+                let path = dir.path().to_path_buf();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let store = Store::open(&path).unwrap();
+                    barrier.wait();
+                    store.extend_paused_until(requested).unwrap()
+                })
+            })
+            .collect();
+        barrier.wait();
+        for worker in workers {
+            assert!(worker.join().unwrap() >= 3600.0);
+        }
+        assert_eq!(store.control().unwrap().paused_until, Some(7200.0));
+        // The user still has an explicit resume operation.
+        store.set_paused_until(None).unwrap();
+        assert_eq!(store.control().unwrap().paused_until, None);
+    }
 
     #[test]
     fn span_open_touch_between() {

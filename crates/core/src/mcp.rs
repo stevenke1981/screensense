@@ -269,12 +269,12 @@ fn call_tool(ctx: &Ctx, params: Option<&Value>) -> Result<Value, RpcError> {
         "screen_pause" => {
             let minutes = minutes_arg(args, 30.0)?;
             let until = ctx.now + minutes * 60.0;
-            return Ok(match ctx.store.set_paused_until(Some(until)) {
-                Ok(()) => text_result(
+            return Ok(match ctx.store.extend_paused_until(until) {
+                Ok(until) => text_result(
                     format!(
                         "Recording paused until {} ({} min). The user can run screensense resume to continue sooner.",
                         digest::clock_time(ctx, until),
-                        minutes.floor() as u64
+                        ((until - ctx.now) / 60.0).max(0.0).floor() as u64
                     ),
                     false,
                 ),
@@ -822,6 +822,24 @@ mod tests {
     }
 
     #[test]
+    fn release_regression_agent_pause_cannot_shorten_user_pause() {
+        let e = env();
+        e.store.set_paused_until(Some(NOW + 60.0 * 60.0)).unwrap();
+        let r = e.call("screen_pause", json!({"minutes": 1}));
+        assert_eq!(r["result"]["isError"], false);
+        assert_eq!(
+            e.store.control().unwrap().paused_until,
+            Some(NOW + 60.0 * 60.0)
+        );
+        assert!(text_of(&r).contains("60 min"), "{}", text_of(&r));
+        e.call("screen_pause", json!({"minutes": 90}));
+        assert_eq!(
+            e.store.control().unwrap().paused_until,
+            Some(NOW + 90.0 * 60.0)
+        );
+    }
+
+    #[test]
     fn pause_and_resume_reach_the_store() {
         let e = env();
         let r = e.call("screen_pause", json!({"minutes": 15}));
@@ -841,7 +859,7 @@ mod tests {
         );
         // String minutes and clamping.
         e.call("screen_pause", json!({"minutes": "5"}));
-        assert_eq!(e.store.control().unwrap().paused_until, Some(NOW + 300.0));
+        assert_eq!(e.store.control().unwrap().paused_until, Some(NOW + 1800.0));
         e.call("screen_pause", json!({"minutes": 1_000_000}));
         assert_eq!(
             e.store.control().unwrap().paused_until,
