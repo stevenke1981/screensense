@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, feature/slint-gnome-gui]
   pull_request:
   workflow_call:
 
