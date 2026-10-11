@@ -24,7 +24,7 @@ use unicode_general_category::{get_general_category, GeneralCategory};
 
 /// Bump whenever a built-in validator or the matching logic changes without a
 /// change to the pattern tables (the tables themselves are part of the hash).
-pub const RULES_VERSION: u32 = 1;
+pub const RULES_VERSION: u32 = 2;
 
 // ---------------------------------------------------------------------------
 // Text helpers
@@ -419,7 +419,16 @@ fn secret_assignment(m: &str) -> bool {
         "this.",
         "config.",
     ];
-    if CODE_PREFIXES.iter().any(|p| lower.starts_with(p)) || lower.ends_with('(') {
+    if CODE_PREFIXES.iter().any(|p| {
+        lower.strip_prefix(p).is_some_and(|tail| {
+            !p.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                || tail
+                    .chars()
+                    .next()
+                    .is_none_or(|c| !c.is_ascii_alphanumeric() && c != '_')
+        })
+    }) || lower.ends_with('(')
+    {
         return false;
     }
     if lower.starts_with("http://") || lower.starts_with("https://") || lower.contains("://") {
@@ -787,6 +796,8 @@ const BUILTIN_RULES: &[BuiltinRule] = &[
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TierReason {
+    UnknownApp,
+    InvalidRules,
     HiddenApp,
     HiddenTitle,
     SelfWindow,
@@ -842,6 +853,7 @@ struct Rule {
 }
 
 pub struct Privacy {
+    blocked: bool,
     warnings: Vec<String>,
     terminal: HashSet<String>,
     editor: HashSet<String>,
@@ -890,7 +902,8 @@ impl Build {
     /// `builtin` patterns are written with `\b`/`\B` and get ASCII boundaries.
     fn regex(&mut self, kind: &str, pattern: &str, ci: bool, builtin: bool) -> Option<Regex> {
         if pattern.trim().is_empty() {
-            self.warnings.push(format!("{kind}: empty pattern ignored"));
+            self.warnings
+                .push(format!("{kind}: empty pattern rejected"));
             return None;
         }
         let src = if builtin {
@@ -944,8 +957,30 @@ impl Build {
 }
 
 impl Privacy {
-    /// Built-in rules + the user's additions. Never fails: a user regex that
-    /// does not compile is skipped and reported through `warnings()`.
+    /// Validate only configured regex additions. Built-ins are covered by compilation tests.
+    pub fn configured_rules_usable(cfg: &PrivacyConfig) -> bool {
+        let mut b = Build {
+            warnings: Vec::new(),
+            canon: String::new(),
+        };
+        for (kind, patterns) in [
+            ("hidden_title_regex", &cfg.hidden_title_regex),
+            ("title_only_title_regex", &cfg.title_only_title_regex),
+            ("sensitive_text", &cfg.sensitive_text_regex),
+            ("hidden_path", &cfg.hidden_path_regex),
+        ] {
+            for pattern in patterns {
+                b.regex(kind, pattern, true, false);
+            }
+        }
+        for rule in &cfg.redact {
+            b.regex("redact", &rule.pattern, false, false);
+        }
+        b.warnings.is_empty()
+    }
+
+    /// Built-in rules + the user's additions. Invalid additions are reported
+    /// through `warnings()` and make this instance unusable for recording/output.
     pub fn new(cfg: &PrivacyConfig, apps: &AppsConfig) -> Privacy {
         let mut b = Build {
             warnings: Vec::new(),
@@ -1066,6 +1101,7 @@ impl Privacy {
 
         let hash = format!("{:016x}", fnv1a64(b.canon.as_bytes()));
         Privacy {
+            blocked: !b.warnings.is_empty(),
             warnings: b.warnings,
             terminal,
             editor,
@@ -1118,7 +1154,13 @@ impl Privacy {
         private_browsing: Option<bool>,
     ) -> Classification {
         let c = |tier, reason| Classification { tier, reason };
+        if self.blocked {
+            return c(Tier::Hidden, TierReason::InvalidRules);
+        }
         let a = norm_app(app);
+        if a.is_empty() || a == "unknown" {
+            return c(Tier::TitleOnly, TierReason::UnknownApp);
+        }
         if self.hidden_apps.contains(&a) {
             return c(Tier::Hidden, TierReason::HiddenApp);
         }
@@ -1152,6 +1194,15 @@ impl Privacy {
 
     /// Would this on-screen text make the frame unusable?
     pub fn check_text(&self, text: &str) -> Option<Sensitive> {
+        if self.blocked {
+            return Some(Sensitive::Rule);
+        }
+        if text.contains(['\n', '\r']) {
+            let joined = text.replace(['\n', '\r'], "");
+            if any_match(&self.sensitive_text, &joined) || self.redact(&joined).hard {
+                return Some(Sensitive::Secret);
+            }
+        }
         if any_match(&self.sensitive_text, text) {
             return Some(Sensitive::Rule);
         }
@@ -1271,8 +1322,33 @@ impl Privacy {
 
     /// None = must not be stored. Some = redacted, whitespace-collapsed, ≤ 300 chars.
     pub fn clean_command(&self, cmd: &str) -> Option<String> {
+        if self.blocked {
+            return None;
+        }
         let t = strip_invisible(cmd);
         if self.text_hidden(&t) {
+            return None;
+        }
+        // Tool-scoped flags: -p means a password for mysql, but a package/port for cargo/ssh.
+        const CREDENTIAL_COMMANDS: &[&str] = &[
+            r#"(?i)(?:^|[\s;&|/\\])curl(?:\.exe)?\b["']?[^\r\n]*?\s(?:-u|--user|--proxy-user|--oauth2-bearer)(?:\s|=|[^\s-])"#,
+            r#"(?i)(?:^|[\s;&|/\\])(?:mysql|mariadb|mysqldump)(?:\.exe)?["']?\s+[^\r\n]*?(?:-p\S+|--password(?:=|\s)\S+)"#,
+            r#"(?i)(?:^|[\s;&|/\\])docker(?:\.exe)?["']?\s+login\b[^\r\n]*?(?:-p\s*\S+|--password(?:=|\s)\S+)"#,
+            r#"(?i)(?:^|[\s;&|/\\])sshpass(?:\.exe)?["']?\s+[^\r\n]*?-p\s*\S+"#,
+            r#"(?i)(?:^|[\s;&|/\\])openssl(?:\.exe)?["']?\s+[^\r\n]*?\s-(?:k|pass)(?:\s|=)\S+"#,
+            r#"(?i)(?:^|[\s;&|/\\])redis-cli(?:\.exe)?["']?\s+[^\r\n]*?(?:-a\s*\S+|--pass(?:word)?(?:=|\s)\S+)"#,
+            r#"(?i)(?:^|[\s;&|/\\])(?:7z|7za|7zz)(?:\.exe)?["']?\s+[^\r\n]*?-p\S+"#,
+            r#"(?i)(?:^|[\s;&|/\\])zip(?:\.exe)?["']?\s+[^\r\n]*?-P\s*\S+"#,
+            r#"(?i)\|\s*sudo(?:\.exe)?["']?\s+[^\r\n]*?(?:-S\b|--stdin\b)"#,
+        ];
+        static COMMAND_RULES: std::sync::OnceLock<Vec<Regex>> = std::sync::OnceLock::new();
+        let rules = COMMAND_RULES.get_or_init(|| {
+            CREDENTIAL_COMMANDS
+                .iter()
+                .filter_map(|p| Regex::new(p).ok())
+                .collect()
+        });
+        if any_match(rules, &format!(" {t}")) {
             return None;
         }
         let r = self.redact(&t);
@@ -1287,6 +1363,14 @@ impl Privacy {
         let t = normalize_title(&strip_invisible(title));
         let r = self.redact(&t);
         cap_chars(&collapse_ws(&r.text), 200)
+    }
+
+    pub fn is_usable(&self) -> bool {
+        !self.blocked
+    }
+
+    pub fn block(&mut self) {
+        self.blocked = true;
     }
 }
 
@@ -1308,24 +1392,61 @@ mod tests {
     #[test]
     fn release_regression_command_credentials_and_safe_flags() {
         let p = Privacy::new(&Default::default(), &Default::default());
-        for cmd in ["curl -u user:pass https://example.com", "mysql -pSECRET", "docker login -p abcdef", "sshpass -p abcdef ssh host", "openssl enc -k abcdef", "openssl enc -pass pass:abcdef", "redis-cli -a abcdef", "7z a -pSECRET a.zip", "zip -P abcdef a.zip", "echo password | sudo -S whoami"] {
-            assert!(p.clean_command(cmd).is_none(), "credential command stored: {cmd}");
+        for cmd in [
+            "curl -u user:pass https://example.com",
+            r#"& "C:\Program Files\curl.exe" --user user:pass https://example.com"#,
+            "'/usr/bin/curl' -u user:pass https://example.com",
+            r#""C:\Tools\mysql.exe" -pSECRET"#,
+            "mysql -pSECRET",
+            "docker login -p abcdef",
+            "sshpass -p abcdef ssh host",
+            "openssl enc -k abcdef",
+            "openssl enc -pass pass:abcdef",
+            "redis-cli -a abcdef",
+            "7z a -pSECRET a.zip",
+            "zip -P abcdef a.zip",
+            "echo password | sudo -S whoami",
+        ] {
+            assert!(
+                p.clean_command(cmd).is_none(),
+                "credential command stored: {cmd}"
+            );
         }
-        for cmd in ["mkdir -p dir", "ssh -p 2222 host", "git push -u origin main", "cargo test -p screensense", "unzip -p a.zip"] {
-            assert!(p.clean_command(cmd).is_some(), "safe command dropped: {cmd}");
+        for cmd in [
+            "mkdir -p dir",
+            "ssh -p 2222 host",
+            "git push -u origin main",
+            "cargo test -p screensense",
+            "unzip -p a.zip",
+        ] {
+            assert!(
+                p.clean_command(cmd).is_some(),
+                "safe command dropped: {cmd}"
+            );
         }
     }
 
     #[test]
     fn release_regression_code_prefix_and_wrapped_secret() {
         let p = Privacy::new(&Default::default(), &Default::default());
-        for value in ["importantSecret123", "requireSecret123", "environSecret123", "getenvSecret123"] {
-            assert!(p.check_text(&format!("password = {value}")).is_some(), "{value}");
+        for value in [
+            "importantSecret123",
+            "requireSecret123",
+            "environSecret123",
+            "getenvSecret123",
+        ] {
+            assert!(
+                p.check_text(&format!("password = {value}")).is_some(),
+                "{value}"
+            );
         }
         let key = format!("ghp_{}\n{}", "a1B2".repeat(4), "a1B2".repeat(5));
         assert!(p.check_text(&key).is_some());
         for app in ["", "unknown", "UNKNOWN.exe"] {
-            assert_ne!(p.classify(app, "ordinary editor", Some(false)).tier, Tier::Full);
+            assert_ne!(
+                p.classify(app, "ordinary editor", Some(false)).tier,
+                Tier::Full
+            );
         }
     }
     use super::*;
@@ -2232,12 +2353,12 @@ mod tests {
     #[test]
     fn check_text_user_additions() {
         let cfg = PrivacyConfig {
-            sensitive_text_regex: vec!["project\\s+blue".into(), String::new()],
+            sensitive_text_regex: vec!["project\\s+blue".into()],
             sensitive_keywords: vec!["Falcon".into(), "  Osprey ".into()],
             ..Default::default()
         };
         let pv = Privacy::new(&cfg, &AppsConfig::default());
-        assert_eq!(pv.warnings().len(), 1, "{:?}", pv.warnings());
+        assert!(pv.warnings().is_empty(), "{:?}", pv.warnings());
         assert_eq!(pv.check_text("about PROJECT   Blue"), Some(Sensitive::Rule));
         assert_eq!(
             pv.check_text("falcon and osprey"),
@@ -2379,7 +2500,7 @@ mod tests {
     }
 
     #[test]
-    fn bad_user_regex_warns_and_is_skipped() {
+    fn bad_user_regex_warns_and_blocks_recording() {
         let cfg = PrivacyConfig {
             hidden_title_regex: vec!["(unclosed".into(), "fine-title".into()],
             title_only_title_regex: vec!["[".into()],
@@ -2397,8 +2518,11 @@ mod tests {
         assert!(pv.warnings().iter().all(|w| w.contains("user")));
         assert_eq!(
             class(&pv, "Code.exe", "my fine-title doc", None).1,
-            TierReason::HiddenTitle
+            TierReason::InvalidRules
         );
+        assert!(!pv.is_usable());
+        assert_eq!(pv.clean_command("cargo build"), None);
+        assert_eq!(pv.check_text("ordinary fixture"), Some(Sensitive::Rule));
         assert_eq!(pv.redact("hello (").text, "hello (");
         // the hash ignores the rules that did not compile
         let good = PrivacyConfig {

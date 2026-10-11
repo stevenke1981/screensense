@@ -139,6 +139,18 @@ pub fn dispatch(cli: Cli) -> anyhow::Result<i32> {
 }
 
 fn run_with_app(app: App, cmd: Cmd) -> anyhow::Result<i32> {
+    if !matches!(
+        &cmd,
+        Cmd::Status
+            | Cmd::Mcp
+            | Cmd::Pause { .. }
+            | Cmd::Resume
+            | Cmd::Sweep
+            | Cmd::Purge { all: true, .. }
+            | Cmd::Daemon(DaemonCmd::Stop | DaemonCmd::Status)
+    ) {
+        app.require_usable_config()?;
+    }
     match cmd {
         Cmd::Daemon(DaemonCmd::Run) => {
             daemon::run_foreground(app)?;
@@ -446,7 +458,19 @@ fn mcp_server(app: &App) -> anyhow::Result<i32> {
     let stdout = io::stdout().lock();
     // A fresh context (fresh `now`) for every message.
     let mut make_ctx = |f: &mut dyn FnMut(&digest::Ctx)| {
-        let ctx = app.ctx();
+        let loaded = Config::load(&app.loaded.path);
+        let mut privacy = Privacy::new(&loaded.config.privacy, &loaded.config.apps);
+        if !loaded.usable() || purge::purge_if_rules_changed(&app.store, &privacy).is_err() {
+            privacy.block();
+        }
+        let ctx = digest::Ctx {
+            store: &app.store,
+            privacy: &privacy,
+            cfg: &loaded.config,
+            lang: app.lang,
+            now: screensense_core::now(),
+            utc_offset_s: None,
+        };
         f(&ctx);
     };
     match mcp::serve(stdin, stdout, &mut make_ctx) {
@@ -508,6 +532,10 @@ fn hook_inner(lang: Option<Lang>) -> Result<(), &'static str> {
     let input = integrations::parse_hook_input(&String::from_utf8_lossy(&raw));
 
     let app = open_app(lang).map_err(|_| "open")?;
+    if app.require_usable_config().is_err() {
+        return Err("config");
+    }
+    purge::purge_if_rules_changed(&app.store, &app.privacy).map_err(|_| "privacy")?;
     if !app.cfg().digest.enabled {
         return Ok(());
     }
@@ -581,6 +609,10 @@ fn record_inner(args: &RecordArgs) -> Result<(), &'static str> {
         return Ok(());
     }
     let app = App::open().map_err(|_| "open")?;
+    if app.require_usable_config().is_err() {
+        return Err("config");
+    }
+    let revision = app.store.privacy_revision().map_err(|_| "control")?;
     let now = screensense_core::now();
     let paused = app
         .store
@@ -609,16 +641,30 @@ fn record_inner(args: &RecordArgs) -> Result<(), &'static str> {
             .collect()
     };
     let code = exit_code_i32(args.exit_code);
-    app.store
-        .command_insert(&NewCommand {
-            ts: now,
-            shell: shell_name(&args.shell),
-            cwd,
-            cmd: cmd.clone(),
-            exit_code: Some(code),
-            duration_ms: Some(args.ms.max(0)),
+    if !app.loaded.still_current() {
+        return Err("config");
+    }
+    let stored = app
+        .store
+        .recording_write(revision, now, || {
+            if !app.loaded.still_current() {
+                return Err(screensense_core::Error::other(
+                    "configuration changed during record",
+                ));
+            }
+            app.store.command_insert(&NewCommand {
+                ts: now,
+                shell: shell_name(&args.shell),
+                cwd,
+                cmd: cmd.clone(),
+                exit_code: Some(code),
+                duration_ms: Some(args.ms.max(0)),
+            })
         })
         .map_err(|_| "command")?;
+    if stored.is_none() {
+        return Ok(());
+    }
 
     if code != 0 && !is_user_stop(args.exit_code) {
         let e = NewError {
@@ -635,7 +681,7 @@ fn record_inner(args: &RecordArgs) -> Result<(), &'static str> {
         };
         // dedupe 0: two failing runs of one command are two failures, however close together.
         app.store
-            .error_upsert(&e, 0.0, app.cfg().errors.repeat_window_s)
+            .error_upsert_guarded(&e, 0.0, app.cfg().errors.repeat_window_s, revision, now)
             .map_err(|_| "error")?;
     }
     Ok(())
@@ -851,7 +897,7 @@ fn purge_cmd(app: &App, all: bool, yes: bool) -> anyhow::Result<i32> {
     }
     app.store.wipe().context("cannot delete the history")?;
     say(&format!(
-        "Deleted all recorded history in {dir}. Settings and the list of windows marked sensitive are kept."
+        "Deleted all recorded history in {dir}. Settings, sensitive-window marks and pause/stop requests are kept."
     ))?;
     Ok(0)
 }
@@ -912,6 +958,8 @@ fn insight_text(i: &Insight) -> String {
 }
 
 fn analyze(app: &App) -> anyhow::Result<i32> {
+    purge::purge_if_rules_changed(&app.store, &app.privacy)
+        .context("cannot apply current privacy rules before analysis output")?;
     let cfg = &app.cfg().analyzer;
     let ep = match analyzer::endpoint(cfg) {
         Ok(ep) => ep,
@@ -934,13 +982,14 @@ fn analyze(app: &App) -> anyhow::Result<i32> {
         "asking {} at {} (up to {} s)...",
         ep.model, ep.url, cfg.timeout_s
     ));
-    match analyzer::run(
+    match analyzer::run_checked(
         &app.store,
         &app.privacy,
         cfg,
         app.lang,
         Trigger::Manual,
         screensense_core::now(),
+        &|| app.loaded.still_current(),
     ) {
         Ok(insight) => {
             say(&insight_text(&insight))?;
@@ -951,6 +1000,8 @@ fn analyze(app: &App) -> anyhow::Result<i32> {
 }
 
 fn insights(app: &App, n: usize) -> anyhow::Result<i32> {
+    purge::purge_if_rules_changed(&app.store, &app.privacy)
+        .context("cannot apply current privacy rules before analysis output")?;
     let list = app
         .store
         .insights_since(0.0, n.max(1))
@@ -987,7 +1038,7 @@ pub fn config_problems() -> Vec<String> {
         privacy
             .warnings()
             .iter()
-            .map(|w| format!("privacy rule skipped: {w}")),
+            .map(|w| format!("privacy rule rejected: {w}")),
     );
     out
 }

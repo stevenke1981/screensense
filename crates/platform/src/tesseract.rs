@@ -1,8 +1,7 @@
 //! OCR through the `tesseract` command-line program.
 //!
-//! No C dependency: the image is written to a private temporary PPM, tesseract
-//! prints a TSV of word boxes on stdout, and the file is deleted again (also on
-//! error, also on timeout: these are screenshots).
+//! No C dependency: an in-memory PPM is piped to tesseract's stdin. It returns
+//! TSV word boxes on stdout. Unredacted pixels are never written to a temporary file.
 //!
 //! Page segmentation mode 6 ("a single uniform block of text") is used: on
 //! the test material it recognised as many words as modes 3, 4 and 11 (within
@@ -19,9 +18,8 @@
 //! back, so they are always in pixels of the image that was passed in.
 
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::{Image, OcrEngine, OcrLine, OcrWord, PlatformError, Result};
@@ -30,7 +28,7 @@ const NOT_FOUND: &str =
     "tesseract not found on PATH (install tesseract-ocr to enable text recognition)";
 /// Hard limit for one recognition.
 const OCR_TIMEOUT: Duration = Duration::from_secs(20);
-/// Words below this confidence (0-100) are noise.
+/// Words below this confidence retain their geometry but no text, for pixel masking.
 const MIN_CONF: f64 = 30.0;
 /// Images narrower than this are upscaled 2x before OCR.
 const UPSCALE_BELOW_WIDTH: u32 = 1000;
@@ -92,16 +90,15 @@ impl OcrEngine for Tesseract {
             (1u32, w, h, rgba_to_rgb(&image.rgba))
         };
 
-        let file = write_temp_ppm(pw, ph, &rgb)?;
+        let data = ppm_bytes(pw, ph, &rgb);
         let mut cmd = Command::new(&self.exe);
-        cmd.arg(file.path())
+        cmd.arg("stdin")
             .arg("stdout")
             .args(["-l", &self.lang, "--psm", "6", "tsv"])
             // One OCR thread: recognition must not hog every core of a dev machine.
             .env("OMP_THREAD_LIMIT", "1");
-        let out = run_capture(cmd, OCR_TIMEOUT)
+        let out = run_capture_input(cmd, OCR_TIMEOUT, Some(data))
             .map_err(|e| PlatformError::Os(format!("tesseract: {e}")))?;
-        drop(file);
         if !out.status.success() {
             let err = String::from_utf8_lossy(&out.stderr);
             let err: String = err.trim().chars().take(300).collect();
@@ -213,12 +210,7 @@ fn parse_tsv(tsv: &str, scale: u32) -> Vec<OcrLine> {
         if text.is_empty() {
             continue;
         }
-        let Ok(conf) = cols[10].trim().parse::<f64>() else {
-            continue;
-        };
-        if conf.is_nan() || conf < MIN_CONF {
-            continue;
-        }
+        let conf = cols[10].trim().parse::<f64>().unwrap_or(f64::NAN);
         let num = |i: usize| cols[i].trim().parse::<u32>().ok();
         let (Some(block), Some(par), Some(line)) = (num(2), num(3), num(4)) else {
             continue;
@@ -232,7 +224,11 @@ fn parse_tsv(tsv: &str, scale: u32) -> Vec<OcrLine> {
         let right = (left.saturating_add(width)).div_ceil(scale);
         let bottom = (top.saturating_add(height)).div_ceil(scale);
         let word = OcrWord {
-            text: text.to_string(),
+            text: if conf.is_finite() && conf >= MIN_CONF {
+                text.to_string()
+            } else {
+                String::new()
+            },
             x,
             y,
             w: right.saturating_sub(x),
@@ -297,80 +293,50 @@ fn upscale2x_rgb(rgba: &[u8], w: usize, h: usize) -> Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------
-// Temp file and child process
+// In-memory input and child process
 // ---------------------------------------------------------------------------
 
-static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-/// A temporary file that is deleted when dropped.
-struct TempFile(PathBuf);
-
-impl TempFile {
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempFile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
-}
-
-/// Write a binary PPM (`P6`) into a fresh, private (0600) file in the temp dir.
-fn write_temp_ppm(w: usize, h: usize, rgb: &[u8]) -> Result<TempFile> {
+/// Binary PPM stays in memory and reaches tesseract only through stdin.
+fn ppm_bytes(w: usize, h: usize, rgb: &[u8]) -> Vec<u8> {
     let mut data = format!("P6\n{w} {h}\n255\n").into_bytes();
     data.extend_from_slice(rgb);
-
-    let dir = std::env::temp_dir();
-    let mut last_err = None;
-    for _ in 0..16 {
-        let n = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = dir.join(format!("screensense-ocr-{}-{}.ppm", std::process::id(), n));
-        let mut opts = std::fs::OpenOptions::new();
-        opts.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(0o600);
-        }
-        match opts.open(&path) {
-            Ok(mut f) => {
-                // From here on the guard owns the file, so every exit path deletes it.
-                let guard = TempFile(path);
-                f.write_all(&data)
-                    .and_then(|()| f.flush())
-                    .map_err(|e| PlatformError::Os(format!("cannot write OCR temp file: {e}")))?;
-                return Ok(guard);
-            }
-            // A stale file from a recycled pid: pick another name, never touch it.
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => last_err = Some(e),
-            Err(e) => {
-                return Err(PlatformError::Os(format!(
-                    "cannot create OCR temp file: {e}"
-                )));
-            }
-        }
-    }
-    Err(PlatformError::Os(format!(
-        "cannot create OCR temp file: {}",
-        last_err.map(|e| e.to_string()).unwrap_or_default()
-    )))
+    data
 }
 
 /// Run a command with null stdin, capturing stdout and stderr, killing it
 /// after `timeout`. The pipes are drained on threads so a large TSV cannot
 /// block the child.
 fn run_capture(
-    mut cmd: Command,
+    cmd: Command,
     timeout: Duration,
 ) -> std::result::Result<std::process::Output, String> {
+    run_capture_input(cmd, timeout, None)
+}
+
+fn run_capture_input(
+    mut cmd: Command,
+    timeout: Duration,
+    data: Option<Vec<u8>>,
+) -> std::result::Result<std::process::Output, String> {
     let mut child = cmd
-        .stdin(Stdio::null())
+        .stdin(if data.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| e.to_string())?;
+    let writer = data.map(|data| {
+        let pipe = child.stdin.take();
+        std::thread::spawn(move || -> std::io::Result<()> {
+            if let Some(mut pipe) = pipe {
+                pipe.write_all(&data)?;
+            }
+            Ok(())
+        })
+    });
     let drain = |pipe: Option<Box<dyn Read + Send>>| {
         std::thread::spawn(move || {
             let mut buf = Vec::new();
@@ -412,6 +378,14 @@ fn run_capture(
     };
     let stdout = t_out.join().unwrap_or_default();
     let stderr = t_err.join().unwrap_or_default();
+    if let Some(writer) = writer {
+        let result = writer
+            .join()
+            .map_err(|_| "OCR input writer stopped".to_string())?;
+        if status.is_ok() {
+            result.map_err(|_| "cannot write OCR stdin".to_string())?;
+        }
+    }
     status.map(|status| std::process::Output {
         status,
         stdout,
@@ -467,7 +441,7 @@ mod tests {
     }
 
     #[test]
-    fn low_confidence_and_blank_words_are_dropped() {
+    fn low_confidence_boxes_are_kept_without_untrusted_text() {
         let t = tsv(&[
             row(5, [1, 1, 1, 1], [0, 0, 10, 10], "29.9", "noise"),
             row(5, [1, 1, 1, 2], [20, 0, 10, 10], "30", "keep"),
@@ -480,7 +454,7 @@ mod tests {
             .flat_map(|l| l.words)
             .map(|w| w.text)
             .collect();
-        assert_eq!(words, vec!["keep", "padded"]);
+        assert_eq!(words, vec!["", "keep", "", "padded"]);
     }
 
     #[test]
@@ -517,14 +491,15 @@ mod tests {
     }
 
     #[test]
-    fn a_line_whose_words_were_all_dropped_leaves_no_empty_line() {
+    fn a_low_confidence_line_keeps_its_boxes() {
         let t = tsv(&[
             row(5, [1, 1, 1, 1], [0, 0, 10, 10], "5", "junk"),
             row(5, [1, 1, 2, 1], [0, 20, 10, 10], "90", "real"),
         ]);
         let lines = parse_tsv(&t, 1);
-        assert_eq!(lines.len(), 1);
-        assert_eq!(lines[0].words[0].text, "real");
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].words[0].text, "");
+        assert_eq!(lines[1].words[0].text, "real");
     }
 
     #[test]
@@ -555,7 +530,7 @@ mod tests {
             .flat_map(|l| l.words)
             .map(|w| w.text)
             .collect();
-        assert_eq!(words, vec!["ok"]);
+        assert_eq!(words, vec!["ok", "", ""]);
         assert!(parse_tsv("", 1).is_empty());
     }
 
@@ -629,22 +604,20 @@ mod tests {
     }
 
     #[test]
-    fn temp_ppm_is_private_well_formed_and_deleted() {
-        use std::os::unix::fs::PermissionsExt;
-        let rgb = [1u8, 2, 3, 4, 5, 6];
-        let f = write_temp_ppm(2, 1, &rgb).unwrap();
-        let path = f.path().to_path_buf();
-        let bytes = std::fs::read(&path).unwrap();
-        assert_eq!(bytes, [b"P6\n2 1\n255\n".as_slice(), &rgb].concat());
-        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600);
-        assert!(path
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .contains(&std::process::id().to_string()));
-        drop(f);
-        assert!(!path.exists());
+    fn ppm_is_piped_without_a_temporary_file() {
+        let data = ppm_bytes(2, 1, &[1, 2, 3, 4, 5, 6]);
+        assert_eq!(
+            data,
+            [b"P6\n2 1\n255\n".as_slice(), &[1, 2, 3, 4, 5, 6]].concat()
+        );
+        let out = run_capture_input(
+            Command::new("cat"),
+            Duration::from_secs(5),
+            Some(data.clone()),
+        )
+        .unwrap();
+        assert!(out.status.success());
+        assert_eq!(out.stdout, data);
     }
 
     #[test]

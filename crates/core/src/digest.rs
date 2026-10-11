@@ -1546,16 +1546,16 @@ pub fn status(ctx: &Ctx) -> String {
             ),
         ));
     }
+    if let Some(until) = active_pause(ctx, hb.as_ref()) {
+        body.push(paused_line(ctx, until));
+    } else if alive {
+        body.push(
+            hb.as_ref()
+                .and_then(|h| idle_line(ctx, h))
+                .unwrap_or_else(|| ctx.t("Recording: active.", "錄製：進行中。").to_string()),
+        );
+    }
     if alive {
-        let pause = active_pause(ctx, hb.as_ref());
-        let state = if let Some(until) = pause {
-            paused_line(ctx, until)
-        } else if let Some(idle) = hb.as_ref().and_then(|h| idle_line(ctx, h)) {
-            idle
-        } else {
-            ctx.t("Recording: active.", "錄製：進行中。").to_string()
-        };
-        body.push(state);
         if let Some(n) = hb.as_ref().and_then(|h| now_info(ctx, h)) {
             body.push(now_line(ctx, &n));
         }

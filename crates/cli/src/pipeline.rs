@@ -182,6 +182,18 @@ impl Capturer {
     fn look(&mut self, req: &LookRequest, now: Ts) -> LookResult {
         // a. Pick up a changed config before deciding anything.
         self.reload_if_needed();
+        if !self.config_current()
+            || self
+                .store
+                .control()
+                .map_or(true, |c| c.stop || c.paused_until.is_some_and(|t| t > now))
+        {
+            return LookResult::Stale;
+        }
+        let revision = match self.store.privacy_revision() {
+            Ok(r) => r,
+            Err(_) => return LookResult::StoreFailed,
+        };
 
         // Defence in depth: the sensor only asks for Full-tier windows, but the rules may
         // have changed since, and a missing OCR engine means the frame could not be checked.
@@ -270,10 +282,23 @@ impl Capturer {
             }
         };
         let lines = to_line_boxes(&ocr_lines);
+        // Empty text with a valid OCR box represents an uncertain word: hide those pixels.
+        let uncertain: Vec<_> = ocr_lines
+            .iter()
+            .flat_map(|l| &l.words)
+            .filter(|w| w.text.is_empty())
+            .map(|w| screensense_core::types::PxRect {
+                x: w.x,
+                y: w.y,
+                w: w.w,
+                h: w.h,
+            })
+            .collect();
         drop(ocr_lines);
 
         // g. Content checks on the UNREDACTED text; it never leaves this function.
-        let layout = self.privacy.redact_lines(&lines);
+        let mut layout = self.privacy.redact_lines(&lines);
+        layout.boxes.extend(uncertain);
         let sensitive = layout.hard || {
             let raw = lines
                 .iter()
@@ -285,10 +310,17 @@ impl Capturer {
         drop(lines);
         if sensitive {
             drop(img);
+            if !self.config_current() || self.store.privacy_revision().ok() != Some(revision) {
+                return LookResult::Stale;
+            }
             if let Err(e) = purge::mark_sensitive(&self.store, &req.app, &req.title, now) {
                 log(&format!("capture: cannot persist a sensitive mark: {e}"));
             }
-            if let Err(e) = self.store.forget_window(&req.app, &req.title) {
+            if let Err(e) = self
+                .store
+                .forget_window(&req.app, &req.title)
+                .and_then(|_| self.store.scrub_deleted())
+            {
                 log(&format!(
                     "capture: cannot delete the history of a sensitive window: {e}"
                 ));
@@ -318,13 +350,17 @@ impl Capturer {
         // The rules or the pause state may have changed while OCR ran.
         {
             let sh = lock(&self.shared);
-            if sh.paused || sh.config_epoch != self.seen_epoch {
+            if sh.paused || sh.config_epoch != self.seen_epoch || sh.generation != req.generation {
                 return LookResult::Stale;
             }
+        }
+        if !self.config_current() {
+            return LookResult::Stale;
         }
 
         // k. Image: pixels are blacked out before anything is written.
         let mut image = None;
+        let mut jpeg = None;
         if self.cfg.capture.keep_images {
             let encoded = imaging::redact_and_encode(
                 &img,
@@ -333,17 +369,14 @@ impl Capturer {
                 self.cfg.capture.jpeg_quality,
             );
             match encoded {
-                Ok(jpeg) => match write_image(&self.data_dir, &jpeg, now) {
-                    Ok(rel) => image = Some(rel),
-                    Err(e) => log(&format!("capture: cannot write the image file: {e}")),
-                },
+                Ok(bytes) => jpeg = Some(bytes),
                 Err(e) => log(&format!("capture: cannot encode the image: {e}")),
             }
         }
         drop(img);
 
         // l. Frame row.
-        let frame = NewFrame {
+        let mut frame = NewFrame {
             ts: now,
             app: req.app.clone(),
             title: req.title.clone(),
@@ -351,8 +384,21 @@ impl Capturer {
             image: image.clone(),
             reason: reason.as_str().to_string(),
         };
-        let frame_id = match self.store.frame_insert(&frame) {
-            Ok(id) => id,
+        let stored = self.store.recording_write(revision, now, || {
+            if !self.config_current() {
+                return Err(screensense_core::Error::other(
+                    "configuration changed during capture",
+                ));
+            }
+            if let Some(bytes) = &jpeg {
+                image = Some(write_image(&self.data_dir, bytes, now)?);
+                frame.image = image.clone();
+            }
+            self.store.frame_insert(&frame)
+        });
+        let frame_id = match stored {
+            Ok(Some(id)) => id,
+            Ok(None) => return LookResult::Stale,
             Err(e) => {
                 log(&format!("capture: cannot store the frame: {e}"));
                 if let Some(rel) = &image {
@@ -378,10 +424,12 @@ impl Capturer {
                 cmd: None,
                 exit_code: None,
             };
-            match self.store.error_upsert(
+            match self.store.error_upsert_guarded(
                 &e,
                 self.cfg.errors.dedupe_s,
                 self.cfg.errors.repeat_window_s,
+                revision,
+                now,
             ) {
                 Ok(up) => {
                     if up.bumped && self.cfg.analyzer.enabled {
@@ -420,8 +468,16 @@ impl Capturer {
         }
         self.seen_epoch = epoch;
         let loaded = Config::load(&self.config_path);
+        if !loaded.usable() {
+            return;
+        }
         self.privacy = Privacy::new(&loaded.config.privacy, &loaded.config.apps);
         self.cfg = loaded.config;
+    }
+
+    fn config_current(&self) -> bool {
+        let current = Config::load(&self.config_path);
+        current.usable() && current.config == self.cfg
     }
 }
 
@@ -566,6 +622,7 @@ pub(crate) mod fake {
         pub private: Option<bool>,
         pub private_calls: u32,
         pub foreground_calls: u32,
+        pub after_foreground: Option<Box<dyn FnOnce() + Send>>,
         pub capture_calls: u32,
         pub notifications: Vec<(String, String)>,
         pub can_capture: bool,
@@ -619,9 +676,15 @@ pub(crate) mod fake {
             }
         }
         fn foreground(&mut self) -> Option<WindowInfo> {
-            let mut st = self.st();
-            st.foreground_calls += 1;
-            st.foreground.clone()
+            let (window, callback) = {
+                let mut st = self.st();
+                st.foreground_calls += 1;
+                (st.foreground.clone(), st.after_foreground.take())
+            };
+            if let Some(callback) = callback {
+                callback();
+            }
+            window
         }
         fn idle_seconds(&mut self) -> Option<f64> {
             self.st().idle
@@ -814,7 +877,10 @@ mod tests {
 
     #[test]
     fn release_regression_changed_or_invalid_config_blocks_queued_capture() {
-        for text in ["broken = = toml", "[privacy]\nhidden_apps = [\"wezterm\"]\n"] {
+        for text in [
+            "broken = = toml",
+            "[privacy]\nhidden_apps = [\"wezterm\"]\n",
+        ] {
             let mut r = rig();
             r.ocr.show(PLAIN);
             let req = r.request(T0);
@@ -1009,6 +1075,31 @@ mod tests {
         assert!(
             luma(x + w / 2, y + h + 8) > 200,
             "below the box is untouched"
+        );
+    }
+
+    #[test]
+    fn release_regression_uncertain_ocr_boxes_hide_pixels() {
+        let mut r = rig();
+        r.ocr
+            .show(&["Build completed with harmless fixture content"]);
+        let (x, y, w, h) = word_box(0, 2);
+        r.ocr.st().lines[0].words[2].text.clear();
+        assert!(matches!(r.look(T0), LookResult::Stored { image: true, .. }));
+        let frame = r.frames().pop().unwrap();
+        let bytes = std::fs::read(r.data().join(frame.image.unwrap())).unwrap();
+        let image = image::load_from_memory(&bytes).unwrap().to_rgb8();
+        assert!(
+            image
+                .get_pixel(x + w / 2, y + h / 2)
+                .0
+                .iter()
+                .all(|v| *v < 30),
+            "uncertain word pixels must be black"
+        );
+        assert!(
+            image.get_pixel(20, 20).0.iter().all(|v| *v > 200),
+            "confident words remain visible"
         );
     }
 

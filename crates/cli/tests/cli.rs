@@ -24,7 +24,10 @@ const TITLE: &str = "main.rs - screensense";
 fn release_regression_invalid_config_drops_shell_record() {
     let sb = Sandbox::new();
     sb.write_config("broken = = toml");
-    sb.run(&["record", "--shell", "bash", "--cwd", "fixture", "--", "cargo", "test"]).ok();
+    sb.run(&[
+        "record", "--shell", "bash", "--cwd", "fixture", "--", "cargo", "test",
+    ])
+    .ok();
     assert!(sb.store().commands_page(0, 10).unwrap().is_empty());
 }
 
@@ -35,6 +38,86 @@ fn release_regression_purge_all_keeps_pause() {
     let until = sb.store().control().unwrap().paused_until;
     sb.run(&["purge", "--all", "--yes"]).ok();
     assert_eq!(sb.store().control().unwrap().paused_until, until);
+    let status = sb.run(&["status"]);
+    assert_eq!(status.code, 3);
+    assert!(
+        status.stdout.contains("Recording paused until"),
+        "{}",
+        status.stdout
+    );
+}
+
+#[test]
+fn release_regression_invalid_privacy_regex_blocks_record_and_hook() {
+    let sb = Sandbox::new();
+    sb.seed();
+    sb.heartbeat();
+    sb.write_config("[privacy]\nhidden_title_regex = [\"(unclosed\"]\n");
+    let before = sb.store().commands_page(0, 100).unwrap().len();
+    sb.run(&["record", "--", "cargo", "test"]).ok();
+    assert_eq!(sb.store().commands_page(0, 100).unwrap().len(), before);
+    let out = sb.run_stdin(&["hook"], b"{}").ok();
+    assert!(out.stdout.is_empty(), "{}", out.stdout);
+}
+
+#[test]
+fn release_regression_mcp_reloads_rules_and_blocks_invalid_config() {
+    let sb = Sandbox::new();
+    sb.seed();
+    let mut child = KillOnDrop(
+        sb.cmd(&["mcp"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut input = child.0.stdin.take().unwrap();
+    let mut output = BufReader::new(child.0.stdout.take().unwrap());
+    let request = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"screen_text\"}}\n";
+    input.write_all(request).unwrap();
+    let mut line = String::new();
+    output.read_line(&mut line).unwrap();
+    assert!(line.contains("compute_frobnication"));
+    sb.write_config("[privacy]\nhidden_apps = [\"Code.exe\"]\n");
+    input.write_all(request).unwrap();
+    line.clear();
+    output.read_line(&mut line).unwrap();
+    assert!(!line.contains("compute_frobnication"), "{line}");
+    sb.write_config("[privacy]\nhidden_title_regex = [\"(broken\"]\n");
+    input.write_all(request).unwrap();
+    line.clear();
+    output.read_line(&mut line).unwrap();
+    assert!(!line.contains("compute_frobnication"));
+    assert!(line.contains("isError"), "{line}");
+    drop(input);
+    assert_eq!(wait_exit(&mut child.0, Duration::from_secs(10)), Some(0));
+}
+
+#[test]
+fn release_regression_insights_are_erased_before_output_after_rules_change() {
+    let sb = Sandbox::new();
+    sb.run(&["purge"]).ok();
+    sb.store()
+        .insight_insert(&screensense_core::types::Insight {
+            ts: now(),
+            doing: "synthetic-private-analysis".into(),
+            state: "working".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(sb
+        .run(&["insights"])
+        .ok()
+        .stdout
+        .contains("synthetic-private-analysis"));
+    sb.write_config("[privacy]\nhidden_apps = [\"Code.exe\"]\n");
+    let output = sb.run(&["insights"]).ok();
+    assert!(
+        !output.stdout.contains("synthetic-private-analysis"),
+        "{}",
+        output.stdout
+    );
+    assert_eq!(sb.store().insights_count_since(0.0).unwrap(), 0);
 }
 
 fn now() -> f64 {
@@ -516,7 +599,7 @@ fn status_reports_config_problems() {
     let o = sb.run(&["status"]);
     assert_eq!(o.code, 3);
     assert!(
-        o.stdout.contains("Problem: privacy rule skipped"),
+        o.stdout.contains("Problem: privacy rule rejected"),
         "{}",
         o.stdout
     );
@@ -879,11 +962,12 @@ fn hook_never_fails_and_never_talks_out_of_turn() {
     );
     assert_silent_ok(&o);
 
-    // A broken config file falls back to defaults: the hook still works, silently.
+    // A broken config blocks history output; hook failure stays silent and exits zero.
     sb.write_config("this is = = not toml");
     sb.heartbeat();
     let o = sb.run_stdin(&["hook"], &hook_input("cfg", "hi", "UserPromptSubmit"));
-    hook_json(&o);
+    assert_silent_ok(&o);
+    assert!(sb.store().session_get("cfg").expect("read").is_none());
 }
 
 #[test]
@@ -1428,7 +1512,7 @@ fn config_init_check_path_show() {
     let bad = sb.run(&["config", "check"]);
     assert_eq!(bad.code, 1);
     assert!(
-        bad.stdout.contains("privacy rule skipped"),
+        bad.stdout.contains("privacy rule rejected"),
         "{}",
         bad.stdout
     );
@@ -1620,7 +1704,7 @@ fn shell_init_prints_the_snippet() {
     assert!(!o.stdout.is_empty());
     assert_eq!(o.stderr, "");
     assert!(
-        o.stdout.contains(BIN),
+        o.stdout.contains(&BIN.replace("\\", "/")),
         "the snippet embeds this binary's path"
     );
     assert!(o.stdout.contains("record"));
@@ -2023,10 +2107,9 @@ fn doctor_reports_without_leaking_hidden_titles() {
         "(parsed)",
         "opens, schema ok",
         "plus 2 of your own",
-        "rule skipped:",
+        "rule rejected:",
         "backend: null",
-        "foreground window: none",
-        "idle time: unknown",
+        "foreground check skipped: configuration or privacy rules are not usable",
         &format!("running (pid {}", std::process::id()),
         "no supported AI tool found",
         "screensense shell-init",
@@ -2041,7 +2124,10 @@ fn doctor_reports_without_leaking_hidden_titles() {
     // Not a terminal: ASCII markers.
     assert!(o.stdout.contains("[ok]") && o.stdout.contains("[!!]"));
     assert!(o.stdout.is_ascii() || !o.stdout.contains('\u{2713}'));
-    assert!(last.contains("cannot be observed"), "{last}");
+    assert!(
+        last.contains("recording and history output are blocked"),
+        "{last}"
+    );
 
     // The same views the hidden window could leak through.
     for args in [&["status"][..], &["now"], &["recent", "60"]] {
@@ -2353,7 +2439,10 @@ mod x11 {
     }
 
     fn doctor(sb: &Sandbox, display: &str) -> Out {
-        sb.run_env(&["doctor", "--capture"], &[("DISPLAY", display)])
+        let mut cmd = sb.cmd(&["doctor", "--capture"]);
+        cmd.env_remove("SCREENSENSE_NO_SCREEN")
+            .env("DISPLAY", display);
+        Out::from(cmd.stdin(Stdio::null()).output().expect("fixture doctor"))
     }
 
     fn wait_for_window(sb: &Sandbox, display: &str, what: &str) -> Out {

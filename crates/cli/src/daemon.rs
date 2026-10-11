@@ -47,7 +47,7 @@ use std::time::{Duration, Instant};
 const TOUCH_EVERY_S: f64 = 5.0;
 const HEARTBEAT_EVERY_S: f64 = 5.0;
 /// How often the config file's modification time is compared.
-const CONFIG_CHECK_S: f64 = 10.0;
+const CONFIG_CHECK_S: f64 = 2.0;
 /// An unknown / "not private" browser answer is asked again after this long.
 const PROBE_RETRY_S: f64 = 30.0;
 /// Poll interval after `FAILURES_BEFORE_BACKOFF` failed ticks in a row.
@@ -140,6 +140,7 @@ pub struct Sensor {
     pid: u32,
 
     current: Option<CurrentSpan>,
+    observed_revision: u64,
     probe: Option<Probe>,
     mark: Option<MarkCache>,
     idle_since: Option<Ts>,
@@ -194,6 +195,7 @@ impl Sensor {
             notes: Vec::new(),
             pid: std::process::id(),
             current: None,
+            observed_revision: 0,
             probe: None,
             mark: None,
             idle_since: None,
@@ -273,6 +275,11 @@ impl Sensor {
 
         // 6. Config hot-reload (before classifying anything with possibly outdated rules).
         self.maybe_reload_config(now)?;
+        if self.loaded.error.is_some() || !self.loaded.usable() {
+            self.close_span(now)?;
+            self.heartbeat(now)?;
+            return Ok(Flow::Continue);
+        }
 
         match control.paused_until {
             Some(until) if until > now => {
@@ -289,6 +296,7 @@ impl Sensor {
             lock(&self.shared).paused = false;
         }
 
+        let revision = self.store.privacy_revision()?;
         // 2. Idle.
         let idle = self
             .platform
@@ -316,7 +324,12 @@ impl Sensor {
             return Ok(Flow::Continue);
         };
         let view = self.classify(&w, now)?;
-        self.track_span(&w, &view, now)?;
+        if !self.track_span(&w, &view, now, revision)? {
+            self.current = None;
+            lock(&self.shared).generation += 1;
+            self.heartbeat(now)?;
+            return Ok(Flow::Continue);
+        }
 
         // 4. Look.
         if view.capturable
@@ -407,30 +420,64 @@ impl Sensor {
         Ok(marked)
     }
 
-    fn track_span(&mut self, w: &WindowInfo, view: &View, now: Ts) -> anyhow::Result<()> {
-        if let Some(cur) = self.current.as_mut() {
-            if cur.app == w.app && cur.title == view.title && cur.tier == view.tier {
+    fn track_span(
+        &mut self,
+        w: &WindowInfo,
+        view: &View,
+        now: Ts,
+        revision: u64,
+    ) -> anyhow::Result<bool> {
+        let same = self.observed_revision == revision
+            && self.current.as_ref().is_some_and(|cur| {
+                cur.app == w.app && cur.title == view.title && cur.tier == view.tier
+            });
+        let current = self.current.as_ref();
+        let id = self.store.recording_write(revision, now, || {
+            if !self.loaded.still_current() {
+                return Err(screensense_core::Error::other(
+                    "configuration changed during observation",
+                ));
+            }
+            if same {
+                let cur = current.expect("same requires a current span");
                 if now - cur.end >= TOUCH_EVERY_S {
                     self.store.span_touch(cur.id, now)?;
+                }
+                Ok(cur.id)
+            } else {
+                if let Some(cur) = current {
+                    self.store.span_set_end(cur.id, now.max(cur.start))?;
+                }
+                self.store.span_open(now, &w.app, &view.title, view.tier)
+            }
+        });
+        let id = match id {
+            Ok(Some(id)) => id,
+            Ok(None) => return Ok(false),
+            Err(_) if !self.loaded.still_current() => return Ok(false),
+            Err(e) => return Err(e.into()),
+        };
+        self.observed_revision = revision;
+        if same {
+            if let Some(cur) = self.current.as_mut() {
+                if now - cur.end >= TOUCH_EVERY_S {
                     cur.end = now;
                 }
-                return Ok(());
             }
+        } else {
+            self.current = Some(CurrentSpan {
+                id,
+                app: w.app.clone(),
+                title: view.title.clone(),
+                tier: view.tier,
+                start: now,
+                end: now,
+            });
+            let mut sh = lock(&self.shared);
+            sh.generation += 1;
+            sh.gate.on_focus(now);
         }
-        self.close_span(now)?;
-        let id = self.store.span_open(now, &w.app, &view.title, view.tier)?;
-        self.current = Some(CurrentSpan {
-            id,
-            app: w.app.clone(),
-            title: view.title.clone(),
-            tier: view.tier,
-            start: now,
-            end: now,
-        });
-        let mut sh = lock(&self.shared);
-        sh.generation += 1;
-        sh.gate.on_focus(now);
-        Ok(())
+        Ok(true)
     }
 
     fn maybe_look(&mut self, w: &WindowInfo, view: &View, now: Ts) {
@@ -470,18 +517,7 @@ impl Sensor {
         };
         lock(&self.shared).generation += 1;
         let end = end.max(cur.start);
-        if end >= cur.end {
-            self.store.span_touch(cur.id, end)?;
-        } else {
-            // The user went idle `idle_threshold_s` ago but the span was extended in the
-            // meantime. `Store::span_touch` never moves an end backwards and there is no
-            // setter, so the row is rewritten (nothing references span ids).
-            self.store.span_delete(cur.id)?;
-            let id = self
-                .store
-                .span_open(cur.start, &cur.app, &cur.title, cur.tier)?;
-            self.store.span_touch(id, end)?;
-        }
+        self.store.span_set_end(cur.id, end)?;
         Ok(())
     }
 
@@ -519,7 +555,33 @@ impl Sensor {
         if !due && self.last_hb_sig.as_ref() == Some(&sig) {
             return Ok(());
         }
-        self.store.set_heartbeat(&self.heartbeat_value(now))?;
+        let hb = self.heartbeat_value(now);
+        if hb.current.is_some() {
+            let result = self.store.recording_write(self.observed_revision, now, || {
+                if !self.loaded.still_current() {
+                    return Err(screensense_core::Error::other(
+                        "configuration changed before heartbeat",
+                    ));
+                }
+                self.store.set_heartbeat(&hb)
+            });
+            match result {
+                Ok(Some(())) => {}
+                Ok(None) => {
+                    self.current = None;
+                    lock(&self.shared).generation += 1;
+                    self.store.set_heartbeat(&self.heartbeat_value(now))?;
+                }
+                Err(_) if !self.loaded.still_current() => {
+                    self.current = None;
+                    lock(&self.shared).generation += 1;
+                    self.store.set_heartbeat(&self.heartbeat_value(now))?;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        } else {
+            self.store.set_heartbeat(&hb)?;
+        }
         self.last_hb = now;
         self.last_hb_sig = Some(sig);
         Ok(())
@@ -531,7 +593,7 @@ impl Sensor {
         let mut out = Vec::new();
         if let Some(e) = &self.loaded.error {
             out.push(format!(
-                "config file {} is not usable, defaults are in effect: {e}",
+                "config file {} is not usable; recording is blocked and the last good settings are retained: {e}",
                 self.loaded.path.display()
             ));
         }
@@ -539,7 +601,7 @@ impl Sensor {
             self.privacy
                 .warnings()
                 .iter()
-                .map(|w| format!("privacy rule skipped: {w}")),
+                .map(|w| format!("privacy rule rejected: {w}")),
         );
         out.extend(self.platform_notes.iter().cloned());
         if !self.can_capture {
@@ -576,7 +638,16 @@ impl Sensor {
             return Ok(());
         }
         self.cfg_stamp = stamp;
-        let loaded = Config::load(&self.loaded.path);
+        let mut loaded = Config::load(&self.loaded.path);
+        if !loaded.usable() {
+            self.loaded.error = Some("configuration or privacy rules are not usable; retaining last good settings and blocking recording".into());
+            self.notes = self.build_notes();
+            self.last_hb_sig = None;
+            self.store.invalidate_privacy()?;
+            lock(&self.shared).config_epoch += 1;
+            return Ok(());
+        }
+        loaded.error = None;
         self.privacy = Privacy::new(&loaded.config.privacy, &loaded.config.apps);
         self.loaded = loaded;
         {
@@ -596,7 +667,7 @@ impl Sensor {
         log(&format!(
             "config reloaded ({})",
             if self.loaded.error.is_some() {
-                "not usable, defaults in effect"
+                "not usable, last good settings retained"
             } else {
                 "ok"
             }
@@ -675,6 +746,9 @@ impl Housekeeper {
         }
         self.seen_epoch = epoch;
         let loaded = Config::load(&self.config_path);
+        if !loaded.usable() {
+            return;
+        }
         self.privacy = Privacy::new(&loaded.config.privacy, &loaded.config.apps);
         self.lang = Lang::resolve(&loaded.config.language);
         self.cfg = loaded.config;
@@ -722,7 +796,11 @@ impl Housekeeper {
         self.reload_if_needed();
         let Job::Analyze(error_id) = job;
         let a = &self.cfg.analyzer;
-        if !a.enabled || now < self.analyzer_retry_at || analyzer::endpoint(a).is_err() {
+        if !a.enabled
+            || !self.config_current()
+            || now < self.analyzer_retry_at
+            || analyzer::endpoint(a).is_err()
+        {
             return false;
         }
         let trigger = Trigger::Error { error_id };
@@ -730,13 +808,14 @@ impl Housekeeper {
             return false; // rate limited
         }
         let started = Instant::now();
-        match analyzer::run(
+        match analyzer::run_checked(
             &self.store,
             &self.privacy,
             a,
             self.lang,
             trigger.clone(),
             now,
+            &|| self.config_current(),
         ) {
             Ok(insight) => {
                 log(&format!(
@@ -766,6 +845,11 @@ impl Housekeeper {
             }
         }
         true
+    }
+
+    fn config_current(&self) -> bool {
+        let loaded = Config::load(&self.config_path);
+        loaded.usable() && loaded.config == self.cfg
     }
 }
 
@@ -814,6 +898,7 @@ fn lock_is_held(data_dir: &Path) -> bool {
 
 /// Run the sensor in this process until a stop is requested. Holds the daemon lock.
 pub fn run_foreground(app: App) -> anyhow::Result<()> {
+    app.require_usable_config()?;
     let App {
         data_dir,
         loaded,
@@ -843,13 +928,19 @@ pub fn run_foreground(app: App) -> anyhow::Result<()> {
     store.set_stop(false)?;
 
     // Before anything is recorded: delete what the current rules no longer allow.
-    match purge::purge_if_rules_changed(&store, &privacy) {
-        Ok(Some(st)) => log_purge(&st),
-        Ok(None) => {}
-        Err(e) => log(&format!(
-            "retroactive purge failed (will not block startup): {e}"
-        )),
-    }
+    let purge_pending = match purge::purge_if_rules_changed(&store, &privacy) {
+        Ok(Some(st)) => {
+            log_purge(&st);
+            false
+        }
+        Ok(None) => false,
+        Err(e) => {
+            log(&format!(
+                "retroactive purge failed; will retry before recording: {e}"
+            ));
+            true
+        }
+    };
     drop(privacy);
 
     let shared = Arc::new(Mutex::new(Shared::new(Gate::new(&loaded.config.capture))));
@@ -919,6 +1010,7 @@ pub fn run_foreground(app: App) -> anyhow::Result<()> {
         ocr_name,
         ocr_problem,
     );
+    sensor.purge_pending = purge_pending;
 
     loop {
         if sensor.tick(screensense_core::now()) == Flow::Stop {
@@ -1365,8 +1457,8 @@ mod tests {
         assert_eq!(spans[1].title, "Inbox - Mail");
         assert_eq!(
             lock(&r.shared).generation,
-            generation + 2,
-            "closed one span, opened one"
+            generation + 1,
+            "one atomic focus change invalidates earlier requests"
         );
     }
 
@@ -1890,7 +1982,7 @@ mod tests {
             "{notes:?}"
         );
 
-        // A rule that does not compile is reported and skipped; the rest still applies.
+        // An invalid privacy rule blocks recording before observing the foreground window.
         let mut r = rig_opts(
             "[privacy]\nhidden_title_regex = [\"(unclosed\", \"payroll\"]\n",
             true,
@@ -1901,8 +1993,9 @@ mod tests {
             .hb()
             .notes
             .iter()
-            .any(|n| n.starts_with("privacy rule skipped")));
-        assert_eq!(r.spans()[0].tier, Tier::Hidden);
+            .any(|n| n.starts_with("privacy rule rejected")));
+        assert!(r.spans().is_empty());
+        assert_eq!(r.plat.st().foreground_calls, 0);
 
         // An analyzer that is switched on but not configured.
         let mut r = rig_opts("[analyzer]\nenabled = true\n", true);
@@ -1912,6 +2005,40 @@ mod tests {
             .notes
             .iter()
             .any(|n| n.starts_with("analyzer is not usable")));
+    }
+
+    #[test]
+    fn release_regression_sensor_drops_observation_invalidated_during_foreground() {
+        for action in ["wipe", "pause", "stop", "rules"] {
+            let mut r = rig();
+            r.plat
+                .show(&window(1, "wezterm", "synthetic-private-observation"));
+            let data = r.data();
+            let config = r.config_path();
+            r.plat.st().after_foreground = Some(Box::new(move || {
+                let store = Store::open(&data).unwrap();
+                match action {
+                    "wipe" => store.wipe().unwrap(),
+                    "pause" => store.set_paused_until(Some(T0 + 60.0)).unwrap(),
+                    "stop" => store.set_stop(true).unwrap(),
+                    "rules" => {
+                        std::fs::write(config, "[privacy]\nhidden_apps = [\"wezterm\"]\n").unwrap()
+                    }
+                    _ => unreachable!(),
+                }
+            }));
+            r.sensor.tick(T0);
+            assert!(
+                r.spans().is_empty(),
+                "{action}: no in-flight span may be recreated"
+            );
+            assert!(r.hb().current.is_none(), "{action}: no title in heartbeat");
+            assert_eq!(
+                r.look_rx.try_iter().count(),
+                0,
+                "{action}: no queued capture"
+            );
+        }
     }
 
     // ---- config hot-reload ----
@@ -1944,13 +2071,9 @@ mod tests {
             "[privacy]\nhidden_title_regex = [\"acme-payroll\"]\n",
         )
         .unwrap();
-        // Not noticed before the check interval (10 s after the first check at tick 2)…
-        r.run(7.0, 11.0);
-        assert_eq!(r.spans().len(), 1);
-        assert_eq!(lock(&r.shared).config_epoch, 0);
-        // …then reloaded.
+        // At the next two-second check the stricter rule is applied.
         r.look_rx.try_iter().count();
-        r.sensor.tick(T0 + 12.0);
+        r.sensor.tick(T0 + 6.0);
         assert_eq!(lock(&r.shared).config_epoch, 1);
         let spans = r.spans();
         assert_eq!(spans.len(), 2);
@@ -1960,7 +2083,7 @@ mod tests {
             "old span purged"
         );
         assert_eq!((spans[1].title.as_str(), spans[1].tier), ("", Tier::Hidden));
-        assert_eq!(spans[1].start, T0 + 12.0);
+        assert_eq!(spans[1].start, T0 + 6.0);
         assert!(
             r.store.frames_since(0.0, 10).unwrap().is_empty(),
             "earlier frames are deleted"
@@ -1999,29 +2122,42 @@ mod tests {
             "[capture]\ndwell_s = 20.0\nmin_interval_s = 50.0\n",
         )
         .unwrap();
-        // Reloaded at T0+10; the window gets a fresh dwell under the new settings.
-        let looks = r.run(1.0, 29.0);
+        // Reloaded at T0+2, before the old dwell elapses.
+        let looks = r.run(1.0, 21.0);
+        assert!(looks.is_empty(), "new dwell must apply before any look");
         assert_eq!(
-            looks.len(),
-            1,
-            "one look under the old settings, before the reload"
+            r.spans().len(),
+            2,
+            "a new privacy revision starts a fresh observation span"
         );
-        assert_eq!(r.spans().len(), 1, "same window, same span");
         assert_eq!(lock(&r.shared).gate.interval_s(), 50.0);
         assert_eq!(
-            r.run(30.0, 30.0).len(),
+            r.run(22.0, 22.0).len(),
             1,
             "first look 20 s after the reload"
         );
 
         std::fs::write(r.config_path(), "capture = = broken").unwrap();
-        r.run(31.0, 45.0);
+        assert!(
+            r.run(23.0, 45.0).is_empty(),
+            "invalid config blocks new looks"
+        );
         assert!(r.hb().notes.iter().any(|n| n.contains("not usable")));
         assert_eq!(
             lock(&r.shared).gate.interval_s(),
-            3.0,
-            "defaults are in effect"
+            50.0,
+            "last good settings retained"
         );
+        std::fs::write(
+            r.config_path(),
+            "[capture]\ndwell_s = 2.0\nmin_interval_s = 4.0\n",
+        )
+        .unwrap();
+        assert!(
+            !r.run(46.0, 55.0).is_empty(),
+            "recording can resume after repair"
+        );
+        assert_eq!(lock(&r.shared).gate.interval_s(), 4.0);
     }
 
     // ---- failures ----

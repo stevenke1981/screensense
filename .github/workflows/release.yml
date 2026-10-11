@@ -15,8 +15,15 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  validate:
+    name: Validate tagged commit
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
   build:
     name: Build ${{ matrix.target }}
+    needs: validate
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -39,7 +46,7 @@ jobs:
           key: release-${{ matrix.target }}
 
       - name: Build
-        run: cargo build --release --locked -p screensense --target ${{ matrix.target }}
+        run: cargo build --release --locked -j1 -p screensense --target ${{ matrix.target }}
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
@@ -49,7 +56,10 @@ jobs:
           $name = "screensense-${{ matrix.target }}"
           New-Item -ItemType Directory -Force -Path "dist/$name" | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/screensense.exe" "dist/$name/"
-          Copy-Item README.md, README.zh-TW.md, LICENSE, THIRD-PARTY-NOTICES.md "dist/$name/"
+          Copy-Item README.md, README.zh-TW.md, LICENSE, THIRD-PARTY-NOTICES.md, SECURITY.md "dist/$name/"
+          New-Item -ItemType Directory -Force -Path "dist/$name/docs" | Out-Null
+          Copy-Item docs/PRIVACY.md, docs/CONFIG.md, docs/WINDOWS-VERIFICATION.md "dist/$name/docs/"
+          "commit=${{ github.sha }}`nversion=${{ github.ref_name }}`ntarget=${{ matrix.target }}" | Set-Content "dist/$name/BUILD-INFO.txt" -Encoding utf8
           Compress-Archive -Path "dist/$name/*" -DestinationPath "dist/$name.zip" -Force
 
       - name: Package (Linux)
@@ -59,7 +69,10 @@ jobs:
           name="screensense-${{ matrix.target }}"
           mkdir -p "dist/$name"
           cp "target/${{ matrix.target }}/release/screensense" "dist/$name/"
-          cp README.md README.zh-TW.md LICENSE THIRD-PARTY-NOTICES.md "dist/$name/"
+          cp README.md README.zh-TW.md LICENSE THIRD-PARTY-NOTICES.md SECURITY.md "dist/$name/"
+          mkdir -p "dist/$name/docs"
+          cp docs/PRIVACY.md docs/CONFIG.md docs/WINDOWS-VERIFICATION.md "dist/$name/docs/"
+          printf 'commit=%s\nversion=%s\ntarget=%s\n' '${{ github.sha }}' '${{ github.ref_name }}' '${{ matrix.target }}' > "dist/$name/BUILD-INFO.txt"
           tar -C "dist/$name" -czf "dist/$name.tar.gz" .
 
       - uses: actions/upload-artifact@v4

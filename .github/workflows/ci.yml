@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:
 
 permissions:
   contents: read
@@ -21,6 +22,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Test the exact candidate SHA rather than GitHub's synthetic PR merge.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Install tesseract and Xvfb
         run: |
@@ -37,19 +41,19 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -j1 -- -D warnings
 
       - name: Tests
-        run: cargo test --workspace
+        run: cargo test --workspace --locked -j1 -- --test-threads=1
 
       # Three tests need a real X server. Without SCREENSENSE_X11_TEST=1 the
-      # first two return early, which is why `cargo test --workspace` above
+      # first two return early, which is why `cargo test --workspace --locked -j1 -- --test-threads=1` above
       # passes on a machine without a display; the third skips itself when
       # Xvfb or the demo window is missing. A skipped test counts as passed
       # by cargo, so each step below also fails when the log says "skipped"
       # or when no test ran.
       - name: Build the demo window
-        run: cargo build -p screensense-platform --example demo_window
+        run: cargo build --locked -j1 -p screensense-platform --example demo_window
 
       # Platform backend: window list, capture, OCR and private-browsing
       # answer against the demo window, plus a reconnect test.
@@ -60,7 +64,7 @@ jobs:
         run: |
           log="$RUNNER_TEMP/x11-platform.log"
           xvfb-run -a -s "-screen 0 1280x800x24" \
-            cargo test -p screensense-platform --test x11_e2e -- --nocapture --test-threads=1 \
+            cargo test --locked -j1 -p screensense-platform --test x11_e2e -- --nocapture --test-threads=1 \
             2>&1 | tee "$log"
           if grep -Eqi 'skipped' "$log"; then echo "::error::an X11 test was skipped"; exit 1; fi
           if ! grep -Eq '^test result: ok\. [1-9][0-9]* passed' "$log"; then echo "::error::no X11 test ran"; exit 1; fi
@@ -75,7 +79,7 @@ jobs:
         run: |
           log="$RUNNER_TEMP/x11-daemon.log"
           xvfb-run -a -s "-screen 0 1280x800x24" \
-            cargo test -p screensense daemon::tests::x11_end_to_end -- --nocapture --test-threads=1 \
+            cargo test --locked -j1 -p screensense daemon::tests::x11_end_to_end -- --nocapture --test-threads=1 \
             2>&1 | tee "$log"
           if grep -Eqi 'skipped' "$log"; then echo "::error::the daemon test was skipped"; exit 1; fi
           if ! grep -Eq '^test result: ok\. 1 passed' "$log"; then echo "::error::the daemon test did not run"; exit 1; fi
@@ -89,7 +93,7 @@ jobs:
         run: |
           log="$RUNNER_TEMP/x11-cli.log"
           xvfb-run -a -s "-screen 0 1280x800x24" \
-            cargo test -p screensense --test cli x11:: -- --nocapture --test-threads=1 \
+            cargo test --locked -j1 -p screensense --test cli x11:: -- --nocapture --test-threads=1 \
             2>&1 | tee "$log"
           if grep -Eqi 'skipped' "$log"; then echo "::error::the doctor --capture test was skipped"; exit 1; fi
           if ! grep -Eq '^test result: ok\. 1 passed' "$log"; then echo "::error::the doctor --capture test did not run"; exit 1; fi
@@ -99,6 +103,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Test the exact candidate SHA rather than GitHub's synthetic PR merge.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -107,21 +114,31 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -j1 -- -D warnings
 
       - name: Tests
-        run: cargo test --workspace
+        run: cargo test --workspace --locked -j1 -- --test-threads=1
 
-      # ---- Smoke: run the real binary on a real Windows machine ----------
-      # A hosted runner may have no interactive desktop and no OCR language
-      # pack, so `doctor --capture` is allowed to fail. Its output is the
-      # evidence: read it in the job log.
-      - name: "Smoke: doctor --capture (may fail on a headless runner)"
+      # Only the self-owned nonactivating fixture is rendered. Headless runner
+      # limitations remain visible as a failed optional step, never a native pass.
+      - name: Native Windows fixture capture and OCR (requires desktop support)
         continue-on-error: true
-        run: cargo run --release -p screensense -- doctor --capture
+        run: cargo test --locked -j1 -p screensense-platform windows_fixture_capture_and_ocr -- --ignored --nocapture --test-threads=1
+
+      - name: Native Windows OCR from in-memory synthetic text (requires OCR language)
+        continue-on-error: true
+        run: cargo test --locked -j1 -p screensense-platform windows_synthetic_ocr -- --ignored --nocapture --test-threads=1
+
+      - name: Build smoke binary
+        run: cargo build --release --locked -j1 -p screensense
+
+      - name: "Smoke: doctor (observation disabled)"
+        env:
+          SCREENSENSE_NO_SCREEN: "1"
+        run: target\release\screensense.exe doctor
 
       - name: "Smoke: config check"
-        run: cargo run --release -p screensense -- config check
+        run: target\release\screensense.exe config check
 
       # The script must at least parse, in PowerShell 7 and in Windows
       # PowerShell 5.1. This step fails the job if it does not.
@@ -148,10 +165,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Test the exact candidate SHA rather than GitHub's synthetic PR merge.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - uses: dtolnay/rust-toolchain@1.89
 
       - uses: Swatinem/rust-cache@v2
 
       - name: Check
-        run: cargo check --workspace --all-targets
+        run: cargo check --workspace --all-targets --locked -j1

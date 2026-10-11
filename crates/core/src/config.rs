@@ -306,6 +306,19 @@ pub struct Loaded {
     pub error: Option<String>,
 }
 
+impl Loaded {
+    /// Diagnostics may retain defaults, but recording and history output must fail closed.
+    pub fn usable(&self) -> bool {
+        self.error.is_none()
+            && crate::privacy::Privacy::configured_rules_usable(&self.config.privacy)
+    }
+
+    pub fn still_current(&self) -> bool {
+        let current = Config::load(&self.path);
+        current.usable() && current.config == self.config
+    }
+}
+
 impl Config {
     /// Parse TOML. Unknown keys are an error, so typos do not pass silently.
     pub fn from_toml(text: &str) -> crate::Result<Config> {
