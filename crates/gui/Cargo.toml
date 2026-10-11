@@ -1,0 +1,28 @@
+[package]
+name = "screensense-gui"
+description = "GNOME-inspired desktop controls for ScreenSense"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "GPL-3.0-only"
+repository.workspace = true
+build = "build.rs"
+
+[dependencies]
+screensense-core.workspace = true
+screensense-platform.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+slint = { version = "=1.15.1", default-features = false, features = ["std", "backend-winit", "renderer-software", "accessibility", "compat-1-2"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[build-dependencies]
+slint-build = "=1.15.1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

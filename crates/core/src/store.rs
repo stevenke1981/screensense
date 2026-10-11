@@ -1478,6 +1478,21 @@ impl Store {
         }
     }
 
+    /// Aggregate history counts for the desktop overview; no content is returned.
+    pub fn history_counts(&self) -> crate::Result<[u64; 5]> {
+        let mut counts = [0; 5];
+        for (i, table) in ["spans", "frames", "errors", "commands", "insights"]
+            .iter()
+            .enumerate()
+        {
+            let n: i64 =
+                self.conn
+                    .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))?;
+            counts[i] = n.max(0) as u64;
+        }
+        Ok(counts)
+    }
+
     /// Delete recorded history and images; preserve configuration, sensitive marks and privacy controls.
     /// For `screensense purge --all`.
     pub fn wipe(&self) -> crate::Result<()> {

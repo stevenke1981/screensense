@@ -2,7 +2,7 @@
 
 [English](README.md) | 繁體中文
 
-ScreenSense 是一支在背景執行的小程式：它會留意你正在用哪個視窗、視窗上有哪些文字，把經過隱私過濾的短期紀錄存在本機的 SQLite 檔案裡，再整理成精簡的摘要交給 AI 程式助理。助理可以透過 hook 在每次送出提示時自動取得，也可以透過 MCP 伺服器在需要時查詢。整個工具只有一個 Rust 執行檔 `screensense`，可搭配 OpenCode、Claude Code、Codex CLI、Gemini CLI，以及任何支援 MCP 的工具。
+ScreenSense 是一套選用式的本機螢幕情境工具：它辨識目前前景視窗與畫面文字，將經隱私過濾的短期紀錄存入本機 SQLite，並提供摘要給 AI 程式開發代理。代理可透過 hook 在每次提示時收到摘要，或透過 MCP 按需查詢。CLI 是 Rust 執行檔 `screensense`，另有可由原始碼建置的 Slint 桌面 GUI；CLI 支援 OpenCode、Claude Code、Codex CLI、Gemini CLI，以及其他支援 MCP 的工具。
 
 > **狀態：v0.1.0。啟用擷取前請先閱讀限制。**
 >
@@ -57,6 +57,19 @@ cargo install --git https://github.com/stevenke1981/screensense --tag v0.1.0 --l
 
 兩支安裝腳本都不會啟動背景程式、不會修改任何 AI 工具的設定檔，也不會設定開機自動啟動。這些都是下面要你自己明確執行的步驟。
 
+## 選用桌面 GUI
+
+原始碼另含 Slint 桌面控制視窗；需使用 Rust 1.89 或更新版本建置並啟動：
+
+```sh
+cargo run --locked -j1 -p screensense-gui
+# 將介面切換為英文；預設為繁體中文：
+cargo run --locked -j1 -p screensense-gui -- --lang en
+```
+
+開啟 GUI 時會存取本機設定、開啟本機資料庫並讀取平台能力與狀態；不會啟動 daemon、擷取畫面、呼叫分析器或管理網路連線。五個頁面提供狀態與實際紀錄數、平台與設定能力、TOML 偏好設定、唯讀診斷，以及需確認的歷史清除操作；不會顯示已儲存的畫面歷史文字。隱私設定無效時會阻擋使用並清空畫面上的紀錄數。偏好設定須先驗證並確認才會儲存；若檔案已在 GUI 外變更，須重新載入後才能儲存。清除歷史會保留設定、敏感視窗標記、暫停及停止控制狀態。
+
+已儲存的設定可能影響已在執行的 daemon。解除暫停後，既有 daemon 可依設定繼續運作；GUI 本身不會啟動 daemon。實作與驗證方式見 [docs/GUI.md](docs/GUI.md) 和 [docs/GUI-DESIGN.md](docs/GUI-DESIGN.md)。GUI crate 採 GPL-3.0-only；既有 CLI、core、platform crates 仍採 MIT。授權範圍詳見 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
 ## 快速開始
 
 先解壓縮後在 PowerShell 執行唯讀檢查；以下命令不會擷取畫面或啟動 daemon：

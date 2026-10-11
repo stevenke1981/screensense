@@ -1,0 +1,3 @@
+[resolver]
+# Keep new GUI transitive dependencies within the workspace's Rust 1.89 floor.
+incompatible-rust-versions = "fallback"

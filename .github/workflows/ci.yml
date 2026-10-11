@@ -29,7 +29,7 @@ jobs:
       - name: Install tesseract and Xvfb
         run: |
           sudo apt-get update
-          sudo apt-get install -y tesseract-ocr xvfb
+          sudo apt-get install -y tesseract-ocr xvfb fonts-noto-cjk
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -45,6 +45,24 @@ jobs:
 
       - name: Tests
         run: cargo test --workspace --locked -j1 -- --test-threads=1
+
+      - name: Build GUI
+        run: cargo build --locked -j1 -p screensense-gui
+
+      - name: GUI rendering and safe interactions (isolated Xvfb window)
+        env:
+          SCREENSENSE_NO_SCREEN: "1"
+        run: xvfb-run -a -s "-screen 0 1280x800x24" target/debug/screensense-gui --verify-native "$RUNNER_TEMP/gui-native-fixture"
+
+      - name: GUI verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-gui-verification
+          path: |
+            ${{ runner.temp }}/gui-native-fixture/*.png
+            ${{ runner.temp }}/gui-native-fixture/verification.json
+          if-no-files-found: warn
 
       # Three tests need a real X server. Without SCREENSENSE_X11_TEST=1 the
       # first two return early, which is why `cargo test --workspace --locked -j1 -- --test-threads=1` above
@@ -118,6 +136,24 @@ jobs:
 
       - name: Tests
         run: cargo test --workspace --locked -j1 -- --test-threads=1
+
+      - name: Build GUI
+        run: cargo build --locked -j1 -p screensense-gui
+
+      - name: GUI software rendering and safe interactions (isolated)
+        env:
+          SCREENSENSE_NO_SCREEN: "1"
+        run: target\debug\screensense-gui.exe --verify-ui "$env:RUNNER_TEMP\gui-software-fixture"
+
+      - name: GUI verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-gui-verification
+          path: |
+            ${{ runner.temp }}/gui-software-fixture/*.png
+            ${{ runner.temp }}/gui-software-fixture/verification.json
+          if-no-files-found: warn
 
       # Only the self-owned nonactivating fixture is rendered. Headless runner
       # limitations remain visible as a failed optional step, never a native pass.

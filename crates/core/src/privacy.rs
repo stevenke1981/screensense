@@ -521,6 +521,7 @@ const HIDDEN_APPS: &[&str] = &[
 
 #[rustfmt::skip]
 const SELF_APPS: &[&str] = &[
+    "screensense-gui.exe", "screensense-gui",
     "claude.exe", "Claude", "claude-desktop", "codex.exe", "codex", "opencode",
     "opencode.exe", "ChatGPT.exe", "chatgpt", "Gemini.exe", "Copilot.exe",
 ];
@@ -1389,6 +1390,17 @@ fn cap_chars(s: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn gui_configuration_window_never_gets_full_capture_tier() {
+        let privacy = p();
+        for app in ["screensense-gui", "ScreenSense-GUI.exe"] {
+            assert_eq!(
+                class(&privacy, app, "ScreenSense preferences", None),
+                (Tier::TitleOnly, TierReason::SelfWindow)
+            );
+        }
+    }
+
     #[test]
     fn release_regression_command_credentials_and_safe_flags() {
         let p = Privacy::new(&Default::default(), &Default::default());

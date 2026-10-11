@@ -2,7 +2,7 @@
 
 English | [繁體中文](README.zh-TW.md)
 
-ScreenSense is a small background program that notices which window you are working in and what text is on it, keeps a short, privacy-filtered history in a local SQLite file, and hands a compact summary to AI coding agents. The agent gets it with every prompt through a hook, or asks for it through an MCP server. It is one Rust binary, `screensense`, and it works with OpenCode, Claude Code, Codex CLI, Gemini CLI and anything else that speaks MCP.
+ScreenSense is an opt-in local screen context tool. It identifies the foreground window and visible text, keeps a short, privacy-filtered history in local SQLite, and provides a compact summary to AI coding agents through a hook or MCP. The CLI is the Rust binary `screensense`; an optional Slint desktop GUI can be built from source. The CLI works with OpenCode, Claude Code, Codex CLI, Gemini CLI, and other MCP clients.
 
 > **Status: v0.1.0. Read the limits before enabling capture.**
 >
@@ -59,6 +59,19 @@ cargo install --git https://github.com/stevenke1981/screensense --tag v0.1.0 --l
 
 Neither install script starts the daemon, edits an AI tool's configuration or enables autostart. Those are the explicit steps below.
 
+## Optional desktop GUI
+
+The source tree includes an optional Slint desktop control window. Build and open it with Rust 1.89 or newer:
+
+```sh
+cargo run --locked -j1 -p screensense-gui
+# Use English instead of the default Traditional Chinese:
+cargo run --locked -j1 -p screensense-gui -- --lang en
+```
+
+Opening the GUI accesses local configuration and opens the local store; it does not start the daemon, capture the screen, call an analyzer, or manage network connections. The five pages show status and real record counts, platform/configuration capabilities, editable TOML preferences, read-only diagnostics, and a confirmed history-clear action. They do not display stored screen-history text. Invalid privacy configuration blocks use and clears displayed counts. Saving preferences requires validation and confirmation; changed-on-disk configuration must be reloaded before saving. Clearing history keeps settings, sensitive-window marks, pause, and stop controls.
+
+A saved configuration can affect an already-running daemon. Resume can let an already-running daemon continue according to its configuration; the GUI never starts a daemon. For the implementation and verification workflow, see [docs/GUI.md](docs/GUI.md) and [docs/GUI-DESIGN.md](docs/GUI-DESIGN.md). The GUI crate is GPL-3.0-only; the existing CLI, core, and platform crates remain MIT licensed. See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 ## Quick start
 
 Start with read-only checks. These commands do not capture the screen or start a daemon:

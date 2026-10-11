@@ -36,7 +36,7 @@ SOFTWARE.
 
 ## Rust dependencies
 
-The binary links the Rust crates below. The main direct dependencies are:
+The CLI/core/platform binary links the Rust crates below. The main direct dependencies are:
 
 | Crate | Used for | Licence |
 |---|---|---|
@@ -52,18 +52,15 @@ The binary links the Rust crates below. The main direct dependencies are:
 | `windows` (Windows) | Win32 and WinRT bindings | MIT OR Apache-2.0 |
 | `anyhow`, `thiserror` | error handling | MIT OR Apache-2.0 |
 
-**SQLite.** `libsqlite3-sys` compiles the SQLite amalgamation into the binary.
-SQLite is in the public domain.
+**SQLite.** `libsqlite3-sys` compiles the SQLite amalgamation into the binary. SQLite is in the public domain.
+
+**GUI crate.** `crates/gui` is licensed under GPL-3.0-only (see [`crates/gui/LICENSE`](crates/gui/LICENSE)). Its Slint UI and build crates are pinned to 1.15.1. Slint's upstream package offers GPL-3.0-only or separate royalty-free/commercial license options; this repository selects the GPL-3.0-only route and does not rely on a paid Slint license. The GUI's GPL license scope does not change the MIT licenses of the existing CLI, core, and platform crates. See [Slint's versioned package metadata](https://raw.githubusercontent.com/slint-ui/slint/v1.15.1/Cargo.toml) and [licensing options](https://slint.dev/pricing).
 
 Each release archive also includes `LICENSES/index.json` and available original `LICENSE`, `NOTICE`, `COPYING` and `COPYRIGHT` texts collected for that archive's target-filtered Cargo dependency set, including build and development dependencies. This collection is not an exact runtime-linked dependency inventory. The online summary below is a concise overview; the per-archive index and texts provide the notices included with that build.
 
 ### Summary by licence
 
-148 crates (transitive, every target platform, from `Cargo.lock` at 0.1.0;
-generated with `cargo metadata`; the exact set linked into one binary is
-smaller because some are specific to Windows, Linux or build time). Where a
-crate offers a choice of licences, ScreenSense uses it under MIT or the
-permissive alternative.
+The 148-crate count below is the historical all-target dependency summary for the v0.1.0 CLI/core/platform release, generated from that release Cargo.lock. It does not include the GUI crate and its Slint dependency graph. Some dependencies in the release summary are target-specific or build-time rather than linked into one binary. Where a crate offers a choice of licences, the existing CLI/core/platform distribution uses the permissive option.
 
 | Licence expression (SPDX, as declared by the crate) | Crates |
 |---|---|
@@ -83,7 +80,7 @@ permissive alternative.
 | Zlib OR Apache-2.0 OR MIT | 1 |
 | 0BSD OR MIT OR Apache-2.0 | 1 |
 
-No crate in the tree declares a copyleft licence (GPL, LGPL, AGPL, MPL).
+The historical CLI/core/platform release dependency summary above contains no declared GPL, LGPL, AGPL, or MPL licence. The GUI crate is a separate GPL-3.0-only component as described above.
 The full licence text of each crate is in its source distribution on
 crates.io; this file does not reproduce them one by one. To list the crates
 yourself:
