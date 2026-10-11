@@ -133,6 +133,9 @@ pub struct ErrorRec {
     pub ts: Ts,
     /// Most recent sighting.
     pub last_ts: Ts,
+    /// When `count` last went up: the first sighting or the latest re-appearance.
+    /// An error that merely stays on screen moves `last_ts` but not this.
+    pub bump_ts: Ts,
     /// Normalised dedupe key (see `detect::line_key`).
     pub key: String,
     pub source: ErrorSource,

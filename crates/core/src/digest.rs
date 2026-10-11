@@ -610,7 +610,7 @@ fn gather_errors(ctx: &Ctx, since: Ts, after: Option<Ts>) -> Vec<ErrView> {
     let recs = ctx.store.errors_since(since, 300).unwrap_or_default();
     let mut v: Vec<ErrView> = recs
         .iter()
-        .filter(|r| after.is_none_or(|a| r.last_ts > a))
+        .filter(|r| after.is_none_or(|a| r.bump_ts > a))
         .filter_map(|r| error_view(ctx, r))
         .collect();
     v.sort_by(|a, b| {
@@ -918,11 +918,18 @@ pub fn build(ctx: &Ctx, mode: Mode) -> Option<String> {
                 let cur_changed = match &now {
                     None => false,
                     Some(n) => {
-                        let at_since = ctx
-                            .store
-                            .spans_between(since, since)
-                            .ok()
-                            .and_then(|v| v.last().map(|s| view_span(ctx, s)));
+                        // The stored end of the open span trails the clock by a few
+                        // seconds (the sensor extends it periodically), so look a little
+                        // before `since` and take the last span that had started by then.
+                        let at_since =
+                            ctx.store
+                                .spans_between(since - 30.0, since)
+                                .ok()
+                                .and_then(|v| {
+                                    v.iter()
+                                        .rfind(|s| s.start <= since)
+                                        .map(|s| view_span(ctx, s))
+                                });
                         match at_since {
                             Some(e) => e.app != n.app || e.title != n.title,
                             None => true,
@@ -3050,6 +3057,42 @@ mod tests {
     }
 
     // ---- delta ----
+
+    #[test]
+    fn delta_ignores_a_lagging_span_end_and_an_error_that_merely_stays_on_screen() {
+        let e = Env::new();
+        // The open span's stored end trails the clock (the sensor extends it every few seconds).
+        let since = NOW - 4.0;
+        e.span(t(13, 40, 0), NOW - 9.0, "Code.exe", "main.rs", Tier::Full);
+        e.alive("Code.exe", "main.rs", Tier::Full, t(13, 40, 0));
+        assert!(build(&e.ctx(), Mode::Delta { since }).is_none());
+        // An error first seen before `since` and still on screen afterwards: same sighting.
+        e.ocr_error(
+            since - 30.0,
+            "k",
+            "Code.exe",
+            "main.rs",
+            &["error[E0308]: x"],
+        );
+        e.ocr_error(
+            since + 2.0,
+            "k",
+            "Code.exe",
+            "main.rs",
+            &["error[E0308]: x"],
+        );
+        assert!(build(&e.ctx(), Mode::Delta { since }).is_none());
+        // It went away and came back (beyond the 90 s dedupe window): that is news.
+        e.ocr_error(
+            since + 100.0,
+            "k",
+            "Code.exe",
+            "main.rs",
+            &["error[E0308]: x"],
+        );
+        let out = build(&e.at(since + 101.0), Mode::Delta { since });
+        assert!(out.is_some_and(|o| o.contains("E0308") && o.contains("(x2)")));
+    }
 
     #[test]
     fn delta_is_none_when_nothing_changed() {

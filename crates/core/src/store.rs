@@ -86,6 +86,7 @@ CREATE TABLE errors (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
     ts        REAL NOT NULL,
     last_ts   REAL NOT NULL,
+    bump_ts   REAL NOT NULL,
     key       TEXT NOT NULL,
     source    TEXT NOT NULL,
     app       TEXT NOT NULL,
@@ -232,7 +233,7 @@ const SPAN_COLS: &str = r#"id, start, "end", app, title, tier"#;
 const FRAME_COLS: &str = "id, ts, app, title, text, image, reason";
 const FRAME_COLS_F: &str = "f.id, f.ts, f.app, f.title, f.text, f.image, f.reason";
 const ERROR_COLS: &str =
-    "id, ts, last_ts, key, source, app, title, lines, count, score, frame_id, cmd, exit_code";
+    "id, ts, last_ts, key, source, app, title, lines, count, score, frame_id, cmd, exit_code, bump_ts";
 const COMMAND_COLS: &str = "id, ts, shell, cwd, cmd, exit_code, duration_ms";
 
 fn span_row(r: &Row) -> rusqlite::Result<Span> {
@@ -267,6 +268,7 @@ fn error_row(r: &Row) -> rusqlite::Result<ErrorRec> {
         id: r.get(0)?,
         ts: r.get(1)?,
         last_ts: r.get(2)?,
+        bump_ts: r.get(13)?,
         key: r.get(3)?,
         source: ErrorSource::parse(&r.get::<_, String>(4)?),
         app: r.get(5)?,
@@ -850,9 +852,9 @@ impl Store {
             None => {
                 let id = tx
                     .prepare_cached(
-                        "INSERT INTO errors(ts, last_ts, key, source, app, title, lines, count, \
-                         score, frame_id, cmd, exit_code) \
-                         VALUES (?1, ?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8, ?9, ?10)",
+                        "INSERT INTO errors(ts, last_ts, bump_ts, key, source, app, title, lines, \
+                         count, score, frame_id, cmd, exit_code) \
+                         VALUES (?1, ?1, ?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8, ?9, ?10)",
                     )?
                     .insert(params![
                         e.ts,
@@ -895,8 +897,8 @@ impl Store {
             }
             Some((id, _, count, _)) => {
                 tx.prepare_cached(
-                    "UPDATE errors SET last_ts = MAX(last_ts, ?2), lines = ?3, \
-                     frame_id = COALESCE(?4, frame_id), score = MAX(score, ?5), \
+                    "UPDATE errors SET last_ts = MAX(last_ts, ?2), bump_ts = MAX(bump_ts, ?2), \
+                     lines = ?3, frame_id = COALESCE(?4, frame_id), score = MAX(score, ?5), \
                      count = count + 1, cmd = COALESCE(?6, cmd), \
                      exit_code = COALESCE(?7, exit_code) WHERE id = ?1",
                 )?
