@@ -29,7 +29,7 @@ jobs:
       - name: Install tesseract and Xvfb
         run: |
           sudo apt-get update
-          sudo apt-get install -y tesseract-ocr xvfb fonts-noto-cjk
+          sudo apt-get install -y tesseract-ocr xvfb fonts-noto-cjk libfontconfig1-dev
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -204,6 +204,11 @@ jobs:
         with:
           # Test the exact candidate SHA rather than GitHub's synthetic PR merge.
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Install GUI font build dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfontconfig1-dev
 
       - uses: dtolnay/rust-toolchain@1.89
 

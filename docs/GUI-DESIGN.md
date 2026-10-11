@@ -13,7 +13,7 @@ The references are GNOME's [Header Bars](https://developer.gnome.org/hig/pattern
 5. **Make focus visible.** Every action and navigation item must be keyboard-focusable with a visible focus ring and accessible role/label. Support Space/Return for buttons and navigation. Keep destructive confirmation safe: Return in the dialog does not confirm deletion; Escape cancels.
 6. **Work at small sizes.** The window's minimum size is 900×600, with content in a scroll view. Keep 1024×600 usable without clipping or hiding the end of a page.
 7. **Avoid decorative noise.** Do not add purple/pink gradients, decorative card walls, fake charts, sample records, or invented status. Show only current configuration, status, real aggregate counts, and explicit messages.
-8. **Require clear confirmation for consequences.** Confirm configuration application, history deletion, pause resume, and discarding unsaved edits. Explain what changes before asking the user to confirm. Validation alone never writes the config.
+8. **Require clear confirmation for consequences.** Confirm configuration application, history deletion, clearing a pause, and discarding unsaved edits. Explain what changes before asking the user to confirm. Validation alone never writes the config.
 9. **Keep the frame native.** Do not draw a fake title bar or replace system window controls. The in-window header is content; window movement and OS window management remain native.
 10. **Keep activation opt-in.** Opening the GUI must not start capture, daemon, OCR, analyzer/model requests, networking, shell hooks, agent setup, or autostart. Actions may change local config or controls only after explicit user input.
 

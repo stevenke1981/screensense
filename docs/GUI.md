@@ -11,7 +11,7 @@ cargo run --locked -j1 -p screensense-gui
 cargo run --locked -j1 -p screensense-gui -- --lang en
 ```
 
-Traditional Chinese is the default. The second command selects English for that launch. The GUI uses Slint 1.15.1; the project workspace MSRV remains Rust 1.89.
+Traditional Chinese is the default. The second command selects English for that launch. The GUI uses Slint 1.15.1; the project workspace MSRV remains Rust 1.89. On Debian/Ubuntu, install the GUI build and CJK font dependencies with `sudo apt-get install libfontconfig1-dev fonts-noto-cjk`. `libfontconfig1-dev` supplies the fontconfig development metadata needed by the build; `fonts-noto-cjk` provides Traditional Chinese glyph fallback.
 
 When the window opens, the service reads the local config, opens the local store, reads control/heartbeat state, and queries platform capability flags. It does not start a daemon, inspect the foreground window, capture pixels, request OCR, call an analyzer/model, or manage a network connection. A configured analyzer endpoint is shown as configuration only. The GUI itself is subject to ScreenSense's self-application title-only privacy rule.
 
@@ -19,7 +19,7 @@ The GUI does not install or start a daemon, configure an agent, add shell hooks,
 
 ## The five pages
 
-1. **Overview** shows whether privacy settings are usable, daemon/stop/pause state, capture and analysis configuration, backend capability, and real history counts. It has explicit pause and resume controls. It never displays captured text or image content. When config/privacy rules are invalid, counts are shown as zero and capture/analysis are blocked.
+1. **Overview** shows whether privacy settings are usable, daemon/stop/pause state, capture and analysis configuration, backend capability, and real history counts. It has explicit Pause and Clear pause controls. It never displays captured text or image content. When config/privacy rules are invalid, counts are shown as zero and capture/analysis are blocked.
 2. **Capture & analysis** displays backend and capture capability, the OCR engine reported by the sensor, image-retention configuration, and analyzer model configuration. It is a configuration/status view, not a capture test, and does not show screen contents.
 3. **Preferences** edits the actual TOML file. Validate checks the draft without writing it; Save opens a consequence/activation confirmation and writes only a valid, usable configuration. The editor keeps invalid source text editable. It detects unreadable or externally changed config, refuses to overwrite a symlink, and requires reload before saving after an external change. Saving invalidates privacy state and purges data no longer allowed by the new rules.
 4. **Diagnostics** reports version, sensor heartbeat/process status, stop request, configuration validity, local paths, and known errors. Its checks do not inspect the foreground window, capture a screen, or probe an analyzer.
@@ -29,7 +29,17 @@ The overview is refreshed every two seconds while the window is idle. Database a
 
 ## License scope
 
-`crates/gui` is GPL-3.0-only, with its license text in [`crates/gui/LICENSE`](../crates/gui/LICENSE). The existing `crates/cli`, `crates/core`, and `crates/platform` packages remain MIT licensed. The GUI pins Slint and `slint-build` to 1.15.1 and uses Slint under GPL-3.0-only. Upstream offers distinct royalty-free and commercial license options; this GUI selects GPL-3.0-only; this work does not accept royalty-free or commercial terms. See [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md), [Slint 1.15.1 package metadata](https://raw.githubusercontent.com/slint-ui/slint/v1.15.1/Cargo.toml), and [Slint licensing options](https://slint.dev/pricing).
+`crates/gui` is GPL-3.0-only, with its license text in [`crates/gui/LICENSE`](../crates/gui/LICENSE). The existing `crates/cli`, `crates/core`, and `crates/platform` packages remain MIT licensed. The GUI pins Slint and `slint-build` to 1.15.1 and uses Slint under GPL-3.0-only. Upstream metadata offers GPL-3.0-only, royalty-free, and commercial license paths; this GUI selects GPL-3.0-only and does not accept Slint royalty-free or commercial license terms. See [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md), [Slint 1.15.1 package metadata](https://raw.githubusercontent.com/slint-ui/slint/v1.15.1/Cargo.toml), and [Slint licensing options](https://slint.dev/pricing).
+
+## CI verification steps
+
+The [CI workflow](../.github/workflows/ci.yml) defines these checks for the GUI:
+
+- **Linux GUI job:** installs `tesseract-ocr`, `xvfb`, `fonts-noto-cjk`, and `libfontconfig1-dev`; runs formatting, workspace clippy/tests, builds `screensense-gui`, then runs `--verify-native` under Xvfb with `SCREENSENSE_NO_SCREEN=1`. It uploads the generated PNGs and `verification.json`.
+- **Windows job:** runs workspace clippy/tests, builds `screensense-gui`, then runs `--verify-ui` with `SCREENSENSE_NO_SCREEN=1` and uploads its rendered PNGs and `verification.json`.
+- **MSRV job:** uses Rust 1.89, installs `libfontconfig1-dev`, and runs `cargo check --workspace --all-targets --locked -j1`.
+
+The first CI run did not pass. A successful GUI build, MSRV check, and rendering verification have not yet been confirmed. These workflow steps describe the intended validation; do not present them as completed results until a successful run is available.
 
 ## Verification workflow
 
@@ -42,13 +52,13 @@ $env:SCREENSENSE_NO_SCREEN = "1"
 cargo run --locked -j1 -p screensense-gui -- --verify-ui .\gui-fixture
 ```
 
-For a native operating-system window using the same software renderer:
+For a native Winit operating-system window, still using Slint software rendering:
 
 ```powershell
 $env:SCREENSENSE_NO_SCREEN = "1"
 cargo run --locked -j1 -p screensense-gui -- --verify-native .\gui-native-fixture
 ```
 
-The output directory must not exist yet. The native mode displays the app's own GUI window only; it does not capture the desktop. On shells other than PowerShell, set `SCREENSENSE_NO_SCREEN=1` using that shell's environment-variable syntax before running the same Cargo arguments.
+The output directory must not exist yet. `--verify-ui` uses Slint's software renderer without a native OS window; `--verify-native` opens the app in a native Winit window and still uses the software renderer. It displays the app's own GUI window only and does not capture the desktop. On shells other than PowerShell, set `SCREENSENSE_NO_SCREEN=1` using that shell's environment-variable syntax before running the same Cargo arguments.
 
 The scripted checks cover Chinese and English rendering, synthetic status, a 60-minute pause followed by a 5-minute extension attempt, stale-response rejection, delete confirmation safety (Return does not confirm; Escape cancels), invalid-regex count clearing, repair/save, wipe preserving pause and stop, and a 1024×600 render. These checks exercise the internal dispatcher and Slint key events; they are not end-to-end physical input tests. At the time of this documentation update, a successful build and visual review have not yet been recorded. Do not treat the commands or listed checks as passed until their run results are available.

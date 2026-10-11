@@ -110,9 +110,18 @@ fn exercise(ui: &AppWindow, service: &mut Service, output: &Path) -> Result<()> 
     ui.set_page(0);
     apply_snapshot(ui, &service.snapshot(false)?, false);
     screenshot(ui, &output.join("06-overview-en.png"))?;
-    ui.window().set_size(slint::LogicalSize::new(1024.0, 600.0));
-    screenshot(ui, &output.join("07-overview-1024x600.png"))?;
     Ok(())
+}
+
+fn verify_small_window(ui: &AppWindow, output: &Path) -> Result<()> {
+    let size = ui.window().size();
+    let scale = ui.window().scale_factor();
+    if (size.width as f32 / scale - 1024.0).abs() > 1.0
+        || (size.height as f32 / scale - 600.0).abs() > 1.0
+    {
+        bail!("native resize did not reach 1024x600 logical pixels");
+    }
+    screenshot(ui, &output.join("07-overview-1024x600.png"))
 }
 
 pub fn run(output: &Path, native: bool) -> Result<()> {
@@ -149,11 +158,34 @@ pub fn run(output: &Path, native: bool) -> Result<()> {
             slint::TimerMode::SingleShot,
             Duration::from_millis(500),
             move || {
-                *sink.borrow_mut() = Some(match weak.upgrade() {
-                    Some(ui) => exercise(&ui, &mut service, &folder),
-                    None => Err(anyhow::anyhow!("window closed before verification")),
+                let check = weak
+                    .upgrade()
+                    .ok_or_else(|| anyhow::anyhow!("window closed before verification"))
+                    .and_then(|ui| {
+                        exercise(&ui, &mut service, &folder)?;
+                        ui.window().set_size(slint::LogicalSize::new(1024.0, 600.0));
+                        Ok(())
+                    });
+                if let Err(error) = check {
+                    *sink.borrow_mut() = Some(Err(error));
+                    let _ = slint::quit_event_loop();
+                    return;
+                }
+                // Winit/X11 resizing is asynchronous. Let the native event loop
+                // apply the resize, then assert actual dimensions before capture.
+                let sink = sink.clone();
+                let weak = weak.clone();
+                let folder = folder.clone();
+                slint::Timer::single_shot(Duration::from_millis(150), move || {
+                    *sink.borrow_mut() = Some(
+                        weak.upgrade()
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("window closed before resize verification")
+                            })
+                            .and_then(|ui| verify_small_window(&ui, &folder)),
+                    );
+                    let _ = slint::quit_event_loop();
                 });
-                let _ = slint::quit_event_loop();
             },
         );
         slint::run_event_loop()?;
@@ -163,7 +195,10 @@ pub fn run(output: &Path, native: bool) -> Result<()> {
             .ok_or_else(|| anyhow::anyhow!("verification did not run"))?;
         completed
     } else {
-        exercise(&ui, &mut service, &output)
+        exercise(&ui, &mut service, &output).and_then(|()| {
+            ui.window().set_size(slint::LogicalSize::new(1024.0, 600.0));
+            verify_small_window(&ui, &output)
+        })
     };
     ui.hide()?;
     result?;
