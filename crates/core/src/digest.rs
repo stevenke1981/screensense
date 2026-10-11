@@ -799,6 +799,7 @@ fn image_line(ctx: &Ctx, after: Option<Ts>) -> Option<String> {
     }
     if ctx.privacy.classify(&f.app, &f.title, Some(false)).tier != Tier::Full
         || ctx.privacy.check_text(&f.text).is_some()
+        || !ctx.privacy.redact(&f.text).spans.is_empty()
     {
         return None;
     }
@@ -2527,6 +2528,27 @@ mod tests {
             "a heartbeat from the future is not a live one"
         );
         assert!(!daemon_alive(Some(&hb(f64::NAN)), NOW));
+    }
+
+    #[test]
+    fn image_path_is_hidden_when_current_soft_rules_would_change_pixels() {
+        let mut e = Env::on_disk();
+        e.cfg.digest.include_image_path = true;
+        e.frame(
+            NOW,
+            "code",
+            "fixture",
+            "fixture-client-name",
+            Some("images/old.jpg"),
+        );
+        assert!(image_line(&e.ctx(), None).is_some());
+        e.cfg.privacy.redact.push(RedactRule {
+            pattern: "fixture-client-name".into(),
+            replace: "[client]".into(),
+            hard: false,
+        });
+        e.privacy = Privacy::new(&e.cfg.privacy, &e.cfg.apps);
+        assert!(image_line(&e.ctx(), None).is_none());
     }
 
     #[test]

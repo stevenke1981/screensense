@@ -120,6 +120,146 @@ fn release_regression_insights_are_erased_before_output_after_rules_change() {
     assert_eq!(sb.store().insights_count_since(0.0).unwrap(), 0);
 }
 
+#[test]
+fn release_regression_now_erases_old_insight_after_rules_change() {
+    let sb = Sandbox::new();
+    sb.seed();
+    sb.heartbeat();
+    sb.run(&["purge"]).ok();
+    sb.store()
+        .insight_insert(&screensense_core::types::Insight {
+            ts: now(),
+            doing: "derived-private-fixture-without-app-name".into(),
+            state: "working".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(sb
+        .run(&["now"])
+        .ok()
+        .stdout
+        .contains("derived-private-fixture"));
+    sb.write_config("[privacy]\nhidden_apps = [\"code\"]\n");
+    let out = sb.run(&["now"]).ok();
+    assert!(
+        !out.stdout.contains("derived-private-fixture"),
+        "{}",
+        out.stdout
+    );
+    assert_eq!(sb.store().insights_count_since(0.0).unwrap(), 0);
+}
+
+#[test]
+fn release_regression_shot_erases_image_after_new_soft_redaction() {
+    let sb = Sandbox::new();
+    sb.run(&["purge"]).ok();
+    let rel = "images/fixture/old-soft-redaction.jpg";
+    let path = sb.data.join(rel);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    image::RgbImage::from_pixel(2, 2, image::Rgb([255, 255, 255]))
+        .save(&path)
+        .unwrap();
+    let id = sb
+        .store()
+        .frame_insert(&NewFrame {
+            ts: now(),
+            app: "code".into(),
+            title: TITLE.into(),
+            text: "fixture-client-name".into(),
+            image: Some(rel.into()),
+            reason: "fixture".into(),
+        })
+        .unwrap();
+    assert!(sb
+        .run(&["shot"])
+        .ok()
+        .stdout
+        .contains("old-soft-redaction.jpg"));
+    sb.write_config(
+        "[[privacy.redact]]\npattern = \"fixture-client-name\"\nreplace = \"[client]\"\n",
+    );
+    let out = sb.run(&["shot"]);
+    assert_eq!(out.code, 1);
+    assert!(
+        !out.stdout.contains("old-soft-redaction.jpg"),
+        "{}",
+        out.stdout
+    );
+    assert!(sb.store().frame_get(id).unwrap().is_none());
+    assert!(!path.exists());
+}
+
+#[test]
+fn release_regression_stream_reloads_rules_and_blocks_invalid_config() {
+    let sb = Sandbox::new();
+    sb.seed();
+    let mut child = KillOnDrop(
+        sb.cmd(&["stream"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let stdout = child.0.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    assert!(rx
+        .recv_timeout(Duration::from_secs(10))
+        .unwrap()
+        .starts_with("[screensense stream]"));
+    std::thread::sleep(Duration::from_millis(1500));
+    sb.write_config("[privacy]\nhidden_apps = [\"code\"]\n");
+    sb.store()
+        .error_upsert(
+            &NewError {
+                ts: now(),
+                key: "stream-hidden-fixture".into(),
+                source: ErrorSource::Ocr,
+                app: "code".into(),
+                title: TITLE.into(),
+                lines: vec!["error: hidden-stream-fixture".into()],
+                score: 80,
+                frame_id: None,
+                cmd: None,
+                exit_code: None,
+            },
+            0.0,
+            900.0,
+        )
+        .unwrap();
+    sb.shell_error("stream-safe-sentinel", 1);
+    loop {
+        let line = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("safe event after rule reload");
+        assert!(!line.contains("hidden-stream-fixture"), "{line}");
+        if line.contains("stream-safe-sentinel") {
+            break;
+        }
+    }
+    sb.write_config("[privacy]\nhidden_title_regex = [\"(broken\"]\n");
+    sb.shell_error("stream-invalid-private-fixture", 1);
+    assert!(
+        rx.recv_timeout(Duration::from_millis(1800)).is_err(),
+        "invalid rules must block all data events"
+    );
+    sb.write_config("[privacy]\nhidden_apps = [\"code\"]\n");
+    std::thread::sleep(Duration::from_millis(1500));
+    sb.shell_error("stream-recovered-sentinel", 1);
+    let line = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("stream continues after config repair");
+    assert!(line.contains("stream-recovered-sentinel"), "{line}");
+    drop(child);
+    reader.join().unwrap();
+}
+
 fn now() -> f64 {
     screensense_core::now()
 }

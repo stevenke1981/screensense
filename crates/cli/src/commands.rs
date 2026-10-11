@@ -347,6 +347,7 @@ fn resume(app: &App) -> anyhow::Result<i32> {
 // ---------------------------------------------------------------------------
 
 fn now(app: &App) -> anyhow::Result<i32> {
+    purge::purge_if_rules_changed(&app.store, &app.privacy)?;
     let ctx = app.ctx();
     match digest::build(&ctx, Mode::Full) {
         Some(text) => say(&text)?,
@@ -380,6 +381,7 @@ fn image_path(dir: &Path, rel: &str) -> Option<PathBuf> {
 }
 
 fn shot(app: &App, n: usize) -> anyhow::Result<i32> {
+    purge::purge_if_rules_changed(&app.store, &app.privacy)?;
     let n = n.max(1);
     let dir = std::path::absolute(&app.data_dir).unwrap_or_else(|_| app.data_dir.clone());
     let frames = app
@@ -395,6 +397,7 @@ fn shot(app: &App, n: usize) -> anyhow::Result<i32> {
         // tightened since the frame was stored.
         if app.privacy.classify(&f.app, &f.title, Some(false)).tier != Tier::Full
             || app.privacy.check_text(&f.text).is_some()
+            || !app.privacy.redact(&f.text).spans.is_empty()
         {
             continue;
         }
@@ -436,9 +439,38 @@ fn stream(app: &App) -> i32 {
         return 0;
     }
     let mut cursor = StreamCursor::start(&app.ctx());
+    let mut blocked = false;
     loop {
         std::thread::sleep(std::time::Duration::from_secs(1));
-        let lines = digest::stream_lines(&app.ctx(), &mut cursor);
+        let loaded = Config::load(&app.loaded.path);
+        let privacy = Privacy::new(&loaded.config.privacy, &loaded.config.apps);
+        if !loaded.usable() || purge::purge_if_rules_changed(&app.store, &privacy).is_err() {
+            if !blocked {
+                warn("screensense stream: configuration or privacy cleanup is not usable; history output is blocked (screensense config check)");
+            }
+            blocked = true;
+            continue;
+        }
+        let ctx = digest::Ctx {
+            store: &app.store,
+            privacy: &privacy,
+            cfg: &loaded.config,
+            lang: app.lang,
+            now: screensense_core::now(),
+            utc_offset_s: None,
+        };
+        if blocked {
+            // Do not replay events buffered while the protection was unusable.
+            cursor = StreamCursor::start(&ctx);
+            blocked = false;
+        }
+        let Ok(revision) = app.store.privacy_revision() else {
+            continue;
+        };
+        let lines = digest::stream_lines(&ctx, &mut cursor);
+        if !loaded.still_current() || app.store.privacy_revision().ok() != Some(revision) {
+            continue;
+        }
         if lines.is_empty() {
             continue;
         }
