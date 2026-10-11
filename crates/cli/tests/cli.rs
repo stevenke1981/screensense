@@ -20,6 +20,23 @@ use std::time::{Duration, Instant};
 const BIN: &str = env!("CARGO_BIN_EXE_screensense");
 const TITLE: &str = "main.rs - screensense";
 
+#[test]
+fn release_regression_invalid_config_drops_shell_record() {
+    let sb = Sandbox::new();
+    sb.write_config("broken = = toml");
+    sb.run(&["record", "--shell", "bash", "--cwd", "fixture", "--", "cargo", "test"]).ok();
+    assert!(sb.store().commands_page(0, 10).unwrap().is_empty());
+}
+
+#[test]
+fn release_regression_purge_all_keeps_pause() {
+    let sb = Sandbox::new();
+    sb.run(&["pause", "60"]).ok();
+    let until = sb.store().control().unwrap().paused_until;
+    sb.run(&["purge", "--all", "--yes"]).ok();
+    assert_eq!(sb.store().control().unwrap().paused_until, until);
+}
+
 fn now() -> f64 {
     screensense_core::now()
 }
@@ -103,6 +120,7 @@ impl Sandbox {
     /// The environment every child gets. Nothing in it points outside the sandbox.
     fn env(&self, cmd: &mut Command) {
         cmd.env("SCREENSENSE_DATA", &self.data)
+            .env("SCREENSENSE_NO_SCREEN", "1")
             .env("SCREENSENSE_CONFIG", &self.config)
             .env("SCREENSENSE_LANG", "en")
             .env("HOME", &self.home)

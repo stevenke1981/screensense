@@ -144,6 +144,9 @@ pub trait OcrEngine: Send {
 /// The backend for this machine. Never fails: falls back to [`NullPlatform`]
 /// with an explanatory note in its capabilities.
 pub fn create_platform() -> Box<dyn Platform> {
+    if std::env::var_os("SCREENSENSE_NO_SCREEN").is_some() {
+        return Box::new(NullPlatform::new("screen observation disabled by SCREENSENSE_NO_SCREEN"));
+    }
     #[cfg(windows)]
     {
         return win::create();

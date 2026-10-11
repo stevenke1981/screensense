@@ -801,6 +801,29 @@ pub(crate) mod fake {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn release_regression_pause_blocks_inflight_look_before_sensor_tick() {
+        let mut r = rig();
+        r.ocr.show(PLAIN);
+        let req = r.request(T0);
+        r.store.set_paused_until(Some(T0 + 60.0)).unwrap();
+        assert_eq!(r.cap.handle(req, T0), LookResult::Stale);
+        assert!(r.frames().is_empty());
+        assert!(image_files(&r.data()).is_empty());
+    }
+
+    #[test]
+    fn release_regression_changed_or_invalid_config_blocks_queued_capture() {
+        for text in ["broken = = toml", "[privacy]\nhidden_apps = [\"wezterm\"]\n"] {
+            let mut r = rig();
+            r.ocr.show(PLAIN);
+            let req = r.request(T0);
+            std::fs::write(&r.cap.config_path, text).unwrap();
+            assert_eq!(r.cap.handle(req, T0), LookResult::Stale);
+            assert!(r.frames().is_empty());
+            assert!(image_files(&r.data()).is_empty());
+        }
+    }
     use super::fake::*;
     use super::*;
     use std::sync::mpsc::{sync_channel, Receiver};

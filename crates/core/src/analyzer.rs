@@ -1454,6 +1454,16 @@ pub fn notification(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn release_regression_previous_insight_is_untrusted_data() {
+        let st = store();
+        let mut prev = insight(NOW - 60.0);
+        prev.doing = "fixture model output".into();
+        st.insight_insert(&prev).unwrap();
+        let p = prompt_for(&st, &privacy(), &Trigger::Manual, Lang::En);
+        assert!(fence_body(&p.user).contains("fixture model output"));
+        assert!(!after_fence(&p.user).contains("fixture model output"));
+    }
     use super::*;
     use crate::config::{AppsConfig, PrivacyConfig};
     use crate::types::{NewCommand, NewError, NewFrame};

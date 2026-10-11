@@ -1305,6 +1305,29 @@ fn cap_chars(s: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn release_regression_command_credentials_and_safe_flags() {
+        let p = Privacy::new(&Default::default(), &Default::default());
+        for cmd in ["curl -u user:pass https://example.com", "mysql -pSECRET", "docker login -p abcdef", "sshpass -p abcdef ssh host", "openssl enc -k abcdef", "openssl enc -pass pass:abcdef", "redis-cli -a abcdef", "7z a -pSECRET a.zip", "zip -P abcdef a.zip", "echo password | sudo -S whoami"] {
+            assert!(p.clean_command(cmd).is_none(), "credential command stored: {cmd}");
+        }
+        for cmd in ["mkdir -p dir", "ssh -p 2222 host", "git push -u origin main", "cargo test -p screensense", "unzip -p a.zip"] {
+            assert!(p.clean_command(cmd).is_some(), "safe command dropped: {cmd}");
+        }
+    }
+
+    #[test]
+    fn release_regression_code_prefix_and_wrapped_secret() {
+        let p = Privacy::new(&Default::default(), &Default::default());
+        for value in ["importantSecret123", "requireSecret123", "environSecret123", "getenvSecret123"] {
+            assert!(p.check_text(&format!("password = {value}")).is_some(), "{value}");
+        }
+        let key = format!("ghp_{}\n{}", "a1B2".repeat(4), "a1B2".repeat(5));
+        assert!(p.check_text(&key).is_some());
+        for app in ["", "unknown", "UNKNOWN.exe"] {
+            assert_ne!(p.classify(app, "ordinary editor", Some(false)).tier, Tier::Full);
+        }
+    }
     use super::*;
     use crate::config::RedactRule;
     use crate::types::WordBox;

@@ -1358,6 +1358,24 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn release_regression_wipe_preserves_privacy_control() {
+        let s = Store::open_in_memory().unwrap();
+        s.set_paused_until(Some(1_900_000_000.0)).unwrap();
+        s.set_stop(true).unwrap();
+        s.wipe().unwrap();
+        assert_eq!(s.control().unwrap().paused_until, Some(1_900_000_000.0));
+        assert!(s.control().unwrap().stop);
+    }
+
+    #[test]
+    fn release_regression_image_removal_failure_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(dir.path()).unwrap();
+        std::fs::create_dir_all(dir.path().join("images/a.jpg/blocked")).unwrap();
+        let id = s.frame_insert(&frame_with_image(1.0, "a", "t", "images/a.jpg")).unwrap();
+        assert!(s.frame_delete(id).is_err());
+    }
     use super::*;
     use std::time::SystemTime;
 
