@@ -19,8 +19,12 @@ if ($LASTEXITCODE -ne 0 -or $dirty) { throw 'Commit the packaging source before 
 if (-not (Test-Path -LiteralPath $InnoCompiler -PathType Leaf)) { throw "Inno Setup compiler missing: $InnoCompiler. See docs/WINDOWS-INSTALLER.md for official tooling." }
 # ISCC's executable resource is the console frontend version, not the engine
 # version. Compile a fixed no-output stdin script to ask the actual engine.
+New-Item -ItemType Directory -Path $output -Force | Out-Null
+$probeDirectory=Join-Path $output ('inno-probe-'+[Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $probeDirectory | Out-Null
 $probe = [System.Diagnostics.ProcessStartInfo]::new()
 $probe.FileName=$InnoCompiler
+$probe.WorkingDirectory=$probeDirectory
 $probe.Arguments='/O- -'
 $probe.UseShellExecute=$false
 $probe.CreateNoWindow=$true
@@ -30,7 +34,7 @@ $probe.RedirectStandardError=$true
 $probeProcess=[System.Diagnostics.Process]::Start($probe)
 $probeOut=$probeProcess.StandardOutput.ReadToEndAsync()
 $probeErr=$probeProcess.StandardError.ReadToEndAsync()
-$probeProcess.StandardInput.WriteLine("[Setup]`nAppName=ScreenSense compiler version probe`nAppVersion=0.0.0`nCreateAppDir=no`nUninstallable=no`nOutput=no`nOutputDir=`nOutputManifestFile=`nPrivilegesRequired=lowest")
+$probeProcess.StandardInput.WriteLine("[Setup]`nAppName=ScreenSense compiler version probe`nAppVersion=0.0.0`nCreateAppDir=no`nUninstallable=no`nOutput=no`nOutputDir=$probeDirectory`nOutputManifestFile=`nPrivilegesRequired=lowest")
 $probeProcess.StandardInput.Close()
 if (-not $probeProcess.WaitForExit(30000)) { throw "Compiler version probe did not exit; PID $($probeProcess.Id). No force termination performed." }
 $probeText=$probeOut.GetAwaiter().GetResult()
