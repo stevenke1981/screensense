@@ -224,6 +224,90 @@ jobs:
           [scriptblock]::Create($script) | Out-Null
           Write-Host "parsed $($script.Length) characters"
 
+      - name: Build matching Windows installer payload (static CRT)
+        env:
+          CARGO_TARGET_DIR: target/installer
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: cargo build --release --locked -j1 --target x86_64-pc-windows-msvc -p screensense -p screensense-gui
+
+      - name: Verify release GUI payload with observation disabled
+        env:
+          SCREENSENSE_NO_SCREEN: "1"
+        run: target\installer\x86_64-pc-windows-msvc\release\screensense-gui.exe --verify-ui "$env:RUNNER_TEMP\gui-installer-payload"
+
+      - name: Collect original dependency notices and corresponding sources
+        shell: pwsh
+        run: |
+          $assets = Join-Path $env:RUNNER_TEMP 'installer-dependencies'
+          New-Item -ItemType Directory -Path $assets | Out-Null
+          cargo metadata --locked --format-version 1 --filter-platform x86_64-pc-windows-msvc > "$assets/metadata.json"
+          if ($LASTEXITCODE -ne 0) { throw 'Locked dependency metadata failed' }
+          python scripts/collect_licenses.py "$assets/metadata.json" "$assets/LICENSES"
+          if ($LASTEXITCODE -ne 0) { throw 'Original dependency notices collection failed' }
+          python scripts/collect_dependency_sources.py "$assets/metadata.json" "$assets/dependency-sources.zip"
+          if ($LASTEXITCODE -ne 0) { throw 'Corresponding dependency sources collection failed' }
+
+      - name: Compile Inno Setup preview and separate fixture installers
+        shell: pwsh
+        run: |
+          $sha = (git rev-parse HEAD).Trim()
+          $compiler = 'C:/Program Files (x86)/Inno Setup 6/ISCC.exe'
+          $binaries = 'target/installer/x86_64-pc-windows-msvc/release'
+          $assets = Join-Path $env:RUNNER_TEMP 'installer-dependencies'
+          ./scripts/package-windows.ps1 -BinaryDir $binaries -DependencyDir $assets -OutputDir "$env:RUNNER_TEMP/windows-installer" -ExpectedCommit $sha -InnoCompiler $compiler
+          $fixtureId = 'ScreenSense.fixture.'+[Guid]::NewGuid().ToString()
+          ./scripts/package-windows.ps1 -BinaryDir $binaries -DependencyDir $assets -OutputDir "$env:RUNNER_TEMP/installer-old" -ExpectedCommit $sha -InnoCompiler $compiler -AppIdentifier $fixtureId -Version '0.0.0-fixture' -VersionNumber '0.0.0.0'
+          ./scripts/package-windows.ps1 -BinaryDir $binaries -DependencyDir $assets -OutputDir "$env:RUNNER_TEMP/installer-upgrade" -ExpectedCommit $sha -InnoCompiler $compiler -AppIdentifier $fixtureId
+          @{ app_id=$fixtureId; commit=$sha } | ConvertTo-Json | Set-Content -LiteralPath "$env:RUNNER_TEMP/installer-fixture-identity.json" -Encoding utf8
+
+      - name: Test isolated per-user installation, upgrade and uninstall
+        shell: pwsh
+        run: |
+          $identity = Get-Content -LiteralPath "$env:RUNNER_TEMP/installer-fixture-identity.json" -Raw | ConvertFrom-Json
+          $old = (Get-ChildItem -LiteralPath "$env:RUNNER_TEMP/installer-old" -Filter '*.exe' -File).FullName
+          $upgrade = (Get-ChildItem -LiteralPath "$env:RUNNER_TEMP/installer-upgrade" -Filter '*.exe' -File).FullName
+          ./scripts/verify-windows-installer.ps1 -InitialInstaller $old -UpgradeInstaller $upgrade -OutputRoot "$env:RUNNER_TEMP/installer-tests" -FixtureAppId $identity.app_id -ExpectedCommit $identity.commit
+
+      - name: Windows Inno Setup preview, SHA256 and provenance
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: |
+            ${{ runner.temp }}/windows-installer/*.exe
+            ${{ runner.temp }}/windows-installer/*.sha256
+            ${{ runner.temp }}/windows-installer/*.build.json
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Separate fixture installers for repeatable upgrade testing
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer-fixtures
+          path: |
+            ${{ runner.temp }}/installer-old/*.exe
+            ${{ runner.temp }}/installer-old/*.sha256
+            ${{ runner.temp }}/installer-old/*.build.json
+            ${{ runner.temp }}/installer-upgrade/*.exe
+            ${{ runner.temp }}/installer-upgrade/*.sha256
+            ${{ runner.temp }}/installer-upgrade/*.build.json
+            ${{ runner.temp }}/installer-fixture-identity.json
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Isolated installer verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer-verification
+          path: |
+            ${{ runner.temp }}/gui-installer-payload/verification.json
+            ${{ runner.temp }}/gui-installer-payload/*.png
+            ${{ runner.temp }}/installer-tests/**/installer-verification.json
+            ${{ runner.temp }}/installer-tests/**/*.log
+            ${{ runner.temp }}/installer-tests/**/gui-check/verification.json
+          retention-days: 14
+          if-no-files-found: warn
+
   msrv:
     name: MSRV (Rust 1.89)
     runs-on: ubuntu-latest

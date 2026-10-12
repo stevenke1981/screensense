@@ -292,7 +292,7 @@ export component AppWindow inherits Window {
                 HorizontalLayout { spacing: 12px;
                     cancel-button := Action { text: root.english ? "Cancel" : "取消"; clicked => { root.confirm-kind = 0; } }
                     confirm-button := Action { text: root.confirm-kind == 2 ? (root.english ? "Clear history" : "清除歷史") : (root.english ? "Confirm" : "確認"); destructive: root.confirm-kind == 2 || root.confirm-kind == 5; suggested: root.confirm-kind != 2 && root.confirm-kind != 5;
-                        clicked => { if(root.confirm-kind == 1) { root.save(root.draft); } else if(root.confirm-kind == 2) { root.wipe(); } else if(root.confirm-kind == 3) { root.resume(); } else if(root.confirm-kind == 5) { root.cleanup(); } else { root.refresh(true); } root.confirm-kind = 0; }
+                        clicked => { root.focus-return = 0; if(root.confirm-kind == 1) { root.save(root.draft); } else if(root.confirm-kind == 2) { root.wipe(); } else if(root.confirm-kind == 3) { root.resume(); } else if(root.confirm-kind == 5) { root.cleanup(); } else { root.refresh(true); } root.confirm-kind = 0; }
                     }
                 }
             }

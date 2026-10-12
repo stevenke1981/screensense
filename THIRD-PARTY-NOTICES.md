@@ -1,7 +1,8 @@
 # Third-party notices
 
-ScreenSense itself is MIT licensed (see [LICENSE](LICENSE)). This file lists
-what it builds on.
+ScreenSense's CLI/core/platform are MIT licensed (see [LICENSE](LICENSE)).
+The optional GUI is GPL-3.0-only, as explained below. This file lists what they
+build on.
 
 ## desktop-sense (inspiration, no code copied)
 
