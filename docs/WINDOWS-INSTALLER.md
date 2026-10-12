@@ -20,6 +20,8 @@ separate from uninstall.
 
 ## Contents and verification
 
+When the installer job finishes successfully, its workflow artifact is named `windows-installer`. The artifact contains the Inno Setup `.exe`, a matching `.sha256` file, and `.build.json` provenance. CI artifacts are temporary workflow outputs, not GitHub Release assets. The separate `windows-installer-fixtures` artifact is for CI upgrade testing and is not the preview installer for users. The workflow also uploads `windows-installer-verification` test evidence.
+
 Each artifact contains the setup EXE, a SHA-256 file and `.build.json` provenance.
 The installed `BUILD-INFO.json` records the source commit and both binary hashes.
 Both binaries are built in release mode with a static CRT; packaging rejects
@@ -34,6 +36,13 @@ build/development dependencies and is not an exact linked-code inventory or a
 configured Cargo vendor directory. Build instructions below use the locked
 registry versions. Slint is used under GPL-3.0-only; no commercial or royalty-free
 Slint license is accepted by this workflow.
+
+Where a published crate omits its upstream notice, the collection includes files
+from its exact recorded upstream revision and verifies their tracked SHA-256.
+The index identifies the single supplemental SPDX MIT reference for the
+`simd_helpers` build helper, whose upstream manifest declares MIT but supplies no
+complete original license file. This supplement does not invent an author's
+copyright notice.
 
 CI verifies the release GUI through internal Slint key events with screen
 observation disabled. It then builds two installers with a new, fixture-only

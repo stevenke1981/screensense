@@ -130,6 +130,8 @@ jobs:
           components: clippy
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -j1 -- -D warnings
@@ -193,23 +195,26 @@ jobs:
         continue-on-error: true
         run: cargo test --locked -j1 -p screensense-platform windows_synthetic_ocr -- --ignored --nocapture --test-threads=1
 
-      - name: Build smoke binary
-        run: cargo build --release --locked -j1 -p screensense
+      - name: Build matching Windows installer and smoke payload (static CRT)
+        env:
+          CARGO_TARGET_DIR: target/installer
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: cargo build --release --locked -j1 --target x86_64-pc-windows-msvc -p screensense -p screensense-gui
 
       - name: "Smoke: doctor (observation disabled)"
         env:
           SCREENSENSE_NO_SCREEN: "1"
-        run: target\release\screensense.exe doctor
+        run: target\installer\x86_64-pc-windows-msvc\release\screensense.exe doctor
 
       - name: "Smoke: config check"
-        run: target\release\screensense.exe config check
+        run: target\installer\x86_64-pc-windows-msvc\release\screensense.exe config check
 
       # The script must at least parse, in PowerShell 7 and in Windows
       # PowerShell 5.1. This step fails the job if it does not.
       - name: "Smoke: shell-init powershell parses (PowerShell 7)"
         shell: pwsh
         run: |
-          $script = & target\release\screensense.exe shell-init powershell | Out-String
+          $script = & target\installer\x86_64-pc-windows-msvc\release\screensense.exe shell-init powershell | Out-String
           if ($LASTEXITCODE -ne 0) { throw "shell-init powershell exited with $LASTEXITCODE" }
           if ([string]::IsNullOrWhiteSpace($script)) { throw "shell-init powershell printed nothing" }
           [scriptblock]::Create($script) | Out-Null
@@ -218,17 +223,11 @@ jobs:
       - name: "Smoke: shell-init powershell parses (Windows PowerShell 5.1)"
         shell: powershell
         run: |
-          $script = & target\release\screensense.exe shell-init powershell | Out-String
+          $script = & target\installer\x86_64-pc-windows-msvc\release\screensense.exe shell-init powershell | Out-String
           if ($LASTEXITCODE -ne 0) { throw "shell-init powershell exited with $LASTEXITCODE" }
           if ([string]::IsNullOrWhiteSpace($script)) { throw "shell-init powershell printed nothing" }
           [scriptblock]::Create($script) | Out-Null
           Write-Host "parsed $($script.Length) characters"
-
-      - name: Build matching Windows installer payload (static CRT)
-        env:
-          CARGO_TARGET_DIR: target/installer
-          RUSTFLAGS: -C target-feature=+crt-static
-        run: cargo build --release --locked -j1 --target x86_64-pc-windows-msvc -p screensense -p screensense-gui
 
       - name: Verify release GUI payload with observation disabled
         env:

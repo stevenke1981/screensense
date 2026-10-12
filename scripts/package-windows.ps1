@@ -73,6 +73,7 @@ Copy-Item -LiteralPath (Join-Path $DependencyDir 'dependency-sources.zip') -Dest
 & git -C $repo archive --format=tar --output="$payload/source.tar" HEAD
 if ($LASTEXITCODE -ne 0) { throw 'Corresponding source archive failed' }
 $buildInfo = @{ commit=$ExpectedCommit; version=$Version; app_identifier=$AppIdentifier; architecture='windows-x86_64'; profile='release + crt-static'; signed=$false; source="https://github.com/stevenke1981/screensense/tree/$ExpectedCommit"; inno_compiler_version=$compilerVersion; cli_sha256=(Get-FileHash -LiteralPath $cli -Algorithm SHA256).Hash.ToLowerInvariant(); gui_sha256=(Get-FileHash -LiteralPath $gui -Algorithm SHA256).Hash.ToLowerInvariant(); dependency_sources_sha256=(Get-FileHash -LiteralPath (Join-Path $payload 'dependency-sources.zip') -Algorithm SHA256).Hash.ToLowerInvariant(); cli_pe=$cliPe; gui_pe=$guiPe }
+$buildInfo.source_sha256=(Get-FileHash -LiteralPath (Join-Path $payload 'source.tar') -Algorithm SHA256).Hash.ToLowerInvariant()
 $buildInfo | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $payload 'BUILD-INFO.json') -Encoding utf8
 $stem = 'ScreenSense-'+$Version+'-'+$ExpectedCommit.Substring(0,7)+'-windows-x64-setup'
 & $InnoCompiler "/DPayloadDir=$payload" "/DOutputDir=$output" "/DAppVersion=$Version" "/DVersionNumber=$VersionNumber" "/DAppIdentifier=$AppIdentifier" "/DInstallerStem=$stem" (Join-Path $repo 'packaging/windows/screensense.iss')

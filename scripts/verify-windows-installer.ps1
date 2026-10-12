@@ -15,6 +15,7 @@ New-Item -ItemType Directory -Path $fixture | Out-Null
 $install = Join-Path $fixture 'app'
 $registry = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\'+$FixtureAppId+'_is1'
 if (Test-Path -LiteralPath $registry) { throw 'Fixture registration already exists; refusing to touch an existing install' }
+$script:ownedProcessPending=$false
 
 function RunOwned([string]$file,[string]$arguments,[bool]$isolatedApp=$false) {
     $start = [System.Diagnostics.ProcessStartInfo]::new()
@@ -33,7 +34,7 @@ function RunOwned([string]$file,[string]$arguments,[bool]$isolatedApp=$false) {
     $p=[System.Diagnostics.Process]::Start($start)
     $stdout=$p.StandardOutput.ReadToEndAsync()
     $stderr=$p.StandardError.ReadToEndAsync()
-    if (-not $p.WaitForExit(120000)) { throw "Owned process did not exit; PID $($p.Id). No force termination performed." }
+    if (-not $p.WaitForExit(120000)) { $script:ownedProcessPending=$true; throw "Owned process did not exit; PID $($p.Id). No force termination performed; fixture cleanup deferred." }
     $out=$stdout.GetAwaiter().GetResult()
     $err=$stderr.GetAwaiter().GetResult()
     if ($p.ExitCode -ne 0) { throw "Owned process exited $($p.ExitCode): $err" }
@@ -55,6 +56,10 @@ function Install([string]$installer,[string]$log) {
     $registration=Get-ItemProperty -LiteralPath $registry
     if ([System.IO.Path]::GetFullPath($registration.InstallLocation.TrimEnd('\')) -ne [System.IO.Path]::GetFullPath($install)) { throw 'Fixture install location mismatch' }
     if ($registration.DisplayVersion -ne $info.version) { throw 'Uninstall display version mismatch' }
+    foreach ($entry in @(@('screensense.exe',$info.cli_sha256),@('screensense-gui.exe',$info.gui_sha256),@('source/source.tar',$info.source_sha256),@('source/dependency-sources.zip',$info.dependency_sources_sha256))) {
+        if ((Get-FileHash -LiteralPath (Join-Path $install $entry[0]) -Algorithm SHA256).Hash.ToLowerInvariant() -ne $entry[1]) { throw "Installed payload hash mismatch: $($entry[0])" }
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $install 'licenses/dependencies/index.json') -PathType Leaf)) { throw 'Original dependency license index missing' }
 }
 
 $checks=[System.Collections.Generic.List[string]]::new()
@@ -94,7 +99,7 @@ try {
         ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $fixture 'installer-verification.json') -Encoding utf8
     Write-Output "PASS $fixture"
 } finally {
-    if (Test-Path -LiteralPath $registry) {
+    if (-not $script:ownedProcessPending -and (Test-Path -LiteralPath $registry)) {
         $registration=Get-ItemProperty -LiteralPath $registry
         if ([System.IO.Path]::GetFullPath($registration.InstallLocation.TrimEnd('\')) -eq [System.IO.Path]::GetFullPath($install)) {
             $uninstaller=Join-Path $install 'unins000.exe'

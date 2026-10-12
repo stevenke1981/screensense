@@ -3,14 +3,15 @@ import argparse
 import json
 from pathlib import Path
 import zipfile
+from metadata_packages import resolved_packages
 
 parser = argparse.ArgumentParser()
 parser.add_argument("metadata", type=Path)
 parser.add_argument("output", type=Path)
 args = parser.parse_args()
-packages = json.loads(args.metadata.read_text(encoding="utf-8-sig"))["packages"]
+packages = resolved_packages(args.metadata)
 index = []
-with zipfile.ZipFile(args.output, "x", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+with zipfile.ZipFile(args.output, "x", compression=zipfile.ZIP_DEFLATED, compresslevel=6, strict_timestamps=False) as archive:
     for package in sorted(packages, key=lambda item: (item["name"], item["version"])):
         if package["source"] is None:
             continue

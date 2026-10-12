@@ -59,6 +59,15 @@ The CLI/core/platform binary links the Rust crates below. The main direct depend
 
 Each release archive also includes `LICENSES/index.json` and available original `LICENSE`, `NOTICE`, `COPYING` and `COPYRIGHT` texts collected for that archive's target-filtered Cargo dependency set, including build and development dependencies. This collection is not an exact runtime-linked dependency inventory. The online summary below is a concise overview; the per-archive index and texts provide the notices included with that build.
 
+The Windows GUI installer places this index at `licenses/dependencies/index.json`.
+For crates whose published package omits original notice files, the installer
+includes notices from the exact upstream Git revision recorded in
+`.cargo_vcs_info.json`; `packaging/windows/upstream-notices/index.json` records
+their immutable URLs and SHA-256 hashes. The `simd_helpers` 0.1.0 build helper
+declares MIT in its original manifest but has no complete original license file
+at that revision. Its entry preserves that manifest and separately identifies
+the canonical SPDX MIT reference text, without inventing a copyright notice.
+
 ### Summary by licence
 
 The 148-crate count below is the historical all-target dependency summary for the v0.1.0 CLI/core/platform release, generated from that release Cargo.lock. It does not include the GUI crate and its Slint dependency graph. Some dependencies in the release summary are target-specific or build-time rather than linked into one binary. Where a crate offers a choice of licences, the existing CLI/core/platform distribution uses the permissive option.

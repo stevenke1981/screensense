@@ -73,7 +73,7 @@ cargo run --locked -j1 -p screensense-gui -- --lang en
 
 若已儲存歷史使用不同隱私規則，GUI 會標示待清理、隱藏歷史紀錄數與快取的感測器訊息，但仍會分別顯示 daemon／暫停／停止狀態。重新整理不會刪除資料。「儲存資料」頁面的「檢視清理」會顯示明確確認，列出要永久刪除的規則衝突歷史與所有已儲存分析結果；確認後仍保留暫停與停止控制。只變更語言不會清除歷史或分析結果。只有驗證成功、明確確認後，隱私規則確實改變的設定才會在原子取代設定檔後執行清理。若舊 TOML 無法解析，儲存不會推定隱私規則改變，也不會自動刪除資料；之後須另外檢視並確認清理。
 
-已儲存的設定可能影響已在執行的 daemon。解除暫停後，既有 daemon 可依設定繼續運作；GUI 本身不會啟動 daemon。目前工作目錄中的 Save 按鈕 dirty-state 與標頭寬度修正仍未驗證，詳見 [docs/GUI.md](docs/GUI.md) 與 [docs/GUI-DESIGN.md](docs/GUI-DESIGN.md)。GUI crate 採 GPL-3.0-only；既有 CLI、core、platform crates 仍採 MIT。授權範圍詳見 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
+已儲存的設定可能影響已在執行的 daemon。解除暫停後，既有 daemon 可依設定繼續運作；GUI 本身不會啟動 daemon。CI 38288020182 的 Linux GUI／端對端與 Confirm-save 檢查、Rust 1.89 MSRV、Windows clippy/tests/software GUI 檢查，以及 static-CRT CLI/GUI 建置與 GUI 驗證均通過。Windows 工作只在依賴授權收集處失敗（缺少 accesskit notice）。target-filtered 授權收集修正已針對 395 個鎖定的 Windows 依賴套件在本機通過檢查；請依候選提交對應的 CI 與安裝驗證報告，確認 Inno 編譯及隔離安裝驗收結果。詳見 [docs/GUI.md](docs/GUI.md)、[docs/GUI-DESIGN.md](docs/GUI-DESIGN.md)、[docs/WINDOWS-INSTALLER.md](docs/WINDOWS-INSTALLER.md) 和 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。GUI crate 採 GPL-3.0-only；既有 CLI、core、platform crates 仍採 MIT。
 ## 快速開始
 
 先解壓縮後在 PowerShell 執行唯讀檢查；以下命令不會擷取畫面或啟動 daemon：
