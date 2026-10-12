@@ -87,6 +87,26 @@ fn exercise(ui: &AppWindow, service: &mut Service, output: &Path) -> Result<()> 
     }
     ui.set_page(2);
     screenshot(ui, &output.join("03-preferences-zh.png"))?;
+    let baseline = ui.get_draft();
+    ui.set_draft(format!("{baseline}\n# Owned accessibility edit\n").into());
+    if !ui.get_dirty() {
+        bail!("accessible/programmatic editor change did not enable Save");
+    }
+    ui.set_draft(baseline.clone());
+    if ui.get_dirty() {
+        bail!("restoring the saved editor text remained dirty");
+    }
+    let saved = perform(service, Action::Save(baseline.to_string()), 42);
+    if !saved.success {
+        bail!("synthetic saved-baseline check could not save configuration");
+    }
+    let newer_draft: slint::SharedString = format!("{baseline}\n# Newer owned edit\n").into();
+    ui.set_draft(newer_draft.clone());
+    apply_reply(ui, 42, saved);
+    if !ui.get_dirty() || ui.get_draft() != newer_draft {
+        bail!("save reply cleared a newer unsaved editor change");
+    }
+    ui.set_draft(baseline);
     // Observe the real destructive callback as well as the synthetic store.
     let wipe_calls = Rc::new(Cell::new(0_u32));
     let counter = wipe_calls.clone();
@@ -267,7 +287,7 @@ pub fn run(output: &Path, native: bool) -> Result<()> {
     let report = serde_json::json!({"result":"passed","renderer":"Slint software","native_window":native,
         "interaction":"internal action dispatcher + Slint key events; not physical mouse/keyboard",
         "screen_observation":"disabled","model_requests":false,"daemon_started":false,
-        "checks":["real rendered Chinese/English views","60 then 5 minute pause retains deadline","stale asynchronous result rejected","pending policy hides history without deleting it","cleanup requires confirmation","Enter does not confirm deletion","Tab and Shift+Tab then Escape cancel deletion","cancel returns keyboard focus to initiating action","invalid regex clears data view","save repaired configuration","wipe preserves pause and stop","1024x600 rendering"]});
+        "checks":["real rendered Chinese/English views","60 then 5 minute pause retains deadline","stale asynchronous result rejected","pending policy hides history without deleting it","cleanup requires confirmation","accessible editor changes enable Save; restoring baseline clears dirty state","Enter does not confirm deletion","Tab and Shift+Tab then Escape cancel deletion","cancel returns keyboard focus to initiating action","invalid regex clears data view","save repaired configuration","wipe preserves pause and stop","1024x600 rendering"]});
     fs::write(
         output.join("verification.json"),
         serde_json::to_vec_pretty(&report)?,

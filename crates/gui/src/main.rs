@@ -30,7 +30,7 @@ struct Reply {
     reload: bool,
     message: String,
     success: bool,
-    saved: bool,
+    saved_draft: Option<String>,
 }
 
 fn apply_snapshot(ui: &AppWindow, s: &Snapshot, reload: bool) {
@@ -59,8 +59,8 @@ fn apply_snapshot(ui: &AppWindow, s: &Snapshot, reload: bool) {
             .into(),
     );
     if reload {
+        ui.set_draft_baseline(s.draft.clone().into());
         ui.set_draft(s.draft.clone().into());
-        ui.set_dirty(false);
     }
 }
 
@@ -78,15 +78,20 @@ fn apply_reply(ui: &AppWindow, current: u64, reply: Reply) {
         ui.set_notes(reply.message.clone().into());
     }
     ui.set_busy(false);
-    if reply.saved && reply.success {
-        ui.set_dirty(false);
+    if reply.success {
+        if let Some(saved_draft) = reply.saved_draft {
+            ui.set_draft_baseline(saved_draft.into());
+        }
     }
     ui.set_message(reply.message.into());
 }
 
 fn perform(service: &mut Service, action: Action, id: u64) -> Reply {
     let reload = matches!(&action, Action::Refresh(true));
-    let saved = matches!(&action, Action::Save(_));
+    let saved_draft = match &action {
+        Action::Save(text) => Some(text.clone()),
+        _ => None,
+    };
     let result: anyhow::Result<&str> = match action {
         Action::Refresh(_) => Ok(""),
         Action::Pause(minutes) => service
@@ -126,7 +131,7 @@ fn perform(service: &mut Service, action: Action, id: u64) -> Reply {
         reload,
         message,
         success,
-        saved,
+        saved_draft,
     }
 }
 

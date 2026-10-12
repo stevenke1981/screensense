@@ -4,6 +4,8 @@
 
 ScreenSense 是一套選用式的本機螢幕情境工具：它辨識目前前景視窗與畫面文字，將經隱私過濾的短期紀錄存入本機 SQLite，並提供摘要給 AI 程式開發代理。代理可透過 hook 在每次提示時收到摘要，或透過 MCP 按需查詢。CLI 是 Rust 執行檔 `screensense`，另有可由原始碼建置的 Slint 桌面 GUI；CLI 支援 OpenCode、Claude Code、Codex CLI、Gemini CLI，以及其他支援 MCP 的工具。
 
+已公開的 v0.1.0 壓縮檔只含 CLI，不含 GUI。Slint GUI 仍在開發分支 `feature/slint-gnome-gui`，尚未合併到 `main`，也尚未發行。v0.1.0 CLI 提供七個 MCP 工具，沒有 `screen_resume`；要提早恢復只能由使用者執行 `screensense resume`。
+
 > **狀態：v0.1.0。啟用擷取前請先閱讀限制。**
 >
 > - **Linux／X11：** daemon、擷取、OCR、儲存、停止及 `doctor --capture` 通過 Xvfb 端對端驗證；digest、MCP 與 CLI 另有以測試資料庫為基礎的測試。
@@ -67,9 +69,11 @@ cargo run --locked -j1 -p screensense-gui
 cargo run --locked -j1 -p screensense-gui -- --lang en
 ```
 
-開啟 GUI 時會存取本機設定、開啟本機資料庫並讀取平台能力與狀態；不會啟動 daemon、擷取畫面、呼叫分析器或管理網路連線。五個頁面提供狀態與實際紀錄數、平台與設定能力、TOML 偏好設定、唯讀診斷，以及需確認的歷史清除操作；不會顯示已儲存的畫面歷史文字。隱私設定無效時會阻擋使用並清空畫面上的紀錄數。偏好設定須先驗證並確認才會儲存；若檔案已在 GUI 外變更，須重新載入後才能儲存。清除歷史會保留設定、敏感視窗標記、暫停及停止控制狀態。
+開啟 GUI 時會存取本機設定、開啟本機資料庫並讀取平台能力與狀態；不會啟動 daemon、擷取畫面、呼叫分析器或管理網路連線。五個頁面提供狀態、實際紀錄數、平台與設定能力、TOML 偏好設定、唯讀診斷，以及需確認的清理操作；不會顯示已儲存的畫面歷史文字。設定無效時會阻擋擷取與分析並隱藏紀錄數。
 
-已儲存的設定可能影響已在執行的 daemon。解除暫停後，既有 daemon 可依設定繼續運作；GUI 本身不會啟動 daemon。實作與驗證方式見 [docs/GUI.md](docs/GUI.md) 和 [docs/GUI-DESIGN.md](docs/GUI-DESIGN.md)。GUI crate 採 GPL-3.0-only；既有 CLI、core、platform crates 仍採 MIT。授權範圍詳見 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
+若已儲存歷史使用不同隱私規則，GUI 會標示待清理、隱藏歷史紀錄數與快取的感測器訊息，但仍會分別顯示 daemon／暫停／停止狀態。重新整理不會刪除資料。「儲存資料」頁面的「檢視清理」會顯示明確確認，列出要永久刪除的規則衝突歷史與所有已儲存分析結果；確認後仍保留暫停與停止控制。只變更語言不會清除歷史或分析結果。只有驗證成功、明確確認後，隱私規則確實改變的設定才會在原子取代設定檔後執行清理。若舊 TOML 無法解析，儲存不會推定隱私規則改變，也不會自動刪除資料；之後須另外檢視並確認清理。
+
+已儲存的設定可能影響已在執行的 daemon。解除暫停後，既有 daemon 可依設定繼續運作；GUI 本身不會啟動 daemon。目前工作目錄中的 Save 按鈕 dirty-state 與標頭寬度修正仍未驗證，詳見 [docs/GUI.md](docs/GUI.md) 與 [docs/GUI-DESIGN.md](docs/GUI-DESIGN.md)。GUI crate 採 GPL-3.0-only；既有 CLI、core、platform crates 仍採 MIT。授權範圍詳見 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
 ## 快速開始
 
 先解壓縮後在 PowerShell 執行唯讀檢查；以下命令不會擷取畫面或啟動 daemon：

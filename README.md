@@ -4,6 +4,8 @@ English | [繁體中文](README.zh-TW.md)
 
 ScreenSense is an opt-in local screen context tool. It identifies the foreground window and visible text, keeps a short, privacy-filtered history in local SQLite, and provides a compact summary to AI coding agents through a hook or MCP. The CLI is the Rust binary `screensense`; an optional Slint desktop GUI can be built from source. The CLI works with OpenCode, Claude Code, Codex CLI, Gemini CLI, and other MCP clients.
 
+The published v0.1.0 archives contain the CLI and do not include the GUI. The Slint GUI is under development on `feature/slint-gnome-gui`; it has not been merged into `main` or released. The v0.1.0 CLI exposes seven MCP tools and has no `screen_resume` tool; resume is available only through the user CLI.
+
 > **Status: v0.1.0. Read the limits before enabling capture.**
 >
 > - **Linux / X11:** the daemon, capture, OCR, storage, stop and `doctor --capture` paths pass an Xvfb end-to-end run. Digest, MCP and CLI views have separate store-backed tests.
@@ -69,9 +71,11 @@ cargo run --locked -j1 -p screensense-gui
 cargo run --locked -j1 -p screensense-gui -- --lang en
 ```
 
-Opening the GUI accesses local configuration and opens the local store; it does not start the daemon, capture the screen, call an analyzer, or manage network connections. The five pages show status and real record counts, platform/configuration capabilities, editable TOML preferences, read-only diagnostics, and a confirmed history-clear action. They do not display stored screen-history text. Invalid privacy configuration blocks use and clears displayed counts. Saving preferences requires validation and confirmation; changed-on-disk configuration must be reloaded before saving. Clearing history keeps settings, sensitive-window marks, pause, and stop controls.
+Opening the GUI accesses local configuration and opens the local store; it does not start the daemon, capture the screen, call an analyzer, or manage network connections. The five pages show status, real history counts, platform/configuration capabilities, editable TOML preferences, read-only diagnostics, and confirmed cleanup actions. The GUI does not display stored screen-history text. Invalid configuration blocks capture and analysis and hides counts.
 
-A saved configuration can affect an already-running daemon. Clearing pause can let an already-running daemon continue according to its configuration; the GUI never starts a daemon. For the implementation and verification workflow, see [docs/GUI.md](docs/GUI.md) and [docs/GUI-DESIGN.md](docs/GUI-DESIGN.md). The GUI crate is GPL-3.0-only; the existing CLI, core, and platform crates remain MIT licensed. See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+If stored history was recorded under different privacy rules, the GUI marks cleanup pending, hides the history counts and cached sensor notes, and keeps daemon/pause/stop status visible. Refreshing the GUI does not delete data. The Stored data page's **Review cleanup** action opens an explicit confirmation naming conflicting history and all stored analysis results for permanent deletion; confirming it preserves pause and stop controls. A language-only save does not clear history or insights. A save that changes privacy rules performs cleanup only after the validated config has been atomically replaced and the save consequences confirmed. If the previous TOML cannot be parsed, saving does not infer a privacy change or delete data; review cleanup separately afterward.
+
+A saved configuration can affect an already-running daemon. Clearing pause can let an already-running daemon continue according to its configuration; the GUI never starts a daemon. The latest working-tree changes to Save-button dirty-state handling and header width remain untested; see [docs/GUI.md](docs/GUI.md) and [docs/GUI-DESIGN.md](docs/GUI-DESIGN.md). The GUI crate is GPL-3.0-only; the existing CLI, core, and platform crates remain MIT licensed. See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 ## Quick start
 
 Start with read-only checks. These commands do not capture the screen or start a daemon:

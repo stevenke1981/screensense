@@ -118,7 +118,8 @@ export component AppWindow inherits Window {
     in property<bool> busy: true;
     in property<string> message;
     in-out property<string> draft;
-    in-out property<bool> dirty: false;
+    in property<string> draft-baseline;
+    out property<bool> dirty: root.draft != root.draft-baseline;
     in-out property<int> confirm-kind: 0;
     in-out property<int> focus-return: 0;
     property<int> modal-target: 0;
@@ -140,8 +141,12 @@ export component AppWindow inherits Window {
                 padding-left: 20px; padding-right: 18px; spacing: 12px;
                 Text { width: 205px; text: "ScreenSense"; color: Theme.ink; font-weight: 700; vertical-alignment: center; }
                 Text { text: root.english ? ["Overview", "Capture & analysis", "Preferences", "Diagnostics", "Stored data"][root.page] : ["總覽", "擷取與分析", "偏好設定", "診斷資訊", "儲存資料"][root.page]; color: Theme.ink; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
-                Action { enabled: root.confirm-kind == 0; text: root.english ? "繁體中文" : "English"; clicked => { root.english = !root.english; } }
-                Action { text: root.english ? "Refresh" : "重新整理"; enabled: !root.busy && root.confirm-kind == 0; clicked => { root.refresh(false); } }
+                Rectangle { width: 112px; background: transparent;
+                    Action { y: (parent.height - self.height)/2; width: parent.width; enabled: root.confirm-kind == 0; text: root.english ? "繁體中文" : "English"; clicked => { root.english = !root.english; } }
+                }
+                Rectangle { width: 112px; background: transparent;
+                    Action { y: (parent.height - self.height)/2; width: parent.width; text: root.english ? "Refresh" : "重新整理"; enabled: !root.busy && root.confirm-kind == 0; clicked => { root.refresh(false); } }
+                }
             }
             Rectangle { y: parent.height - 1px; height: 1px; background: Theme.line; }
         }
@@ -214,7 +219,7 @@ export component AppWindow inherits Window {
                             Row { label: root.english ? "Retention: images / frames / timeline" : "保留時間：影像／影格／時間軸"; value: root.retention; }
                         } }
                         Text { text: root.config-path; color: Theme.muted; wrap: word-wrap; font-size: 12px; }
-                        TextEdit { height: 240px; text <=> root.draft; enabled: !root.busy && root.confirm-kind == 0; edited => { root.dirty = true; } }
+                        TextEdit { height: 240px; text <=> root.draft; enabled: !root.busy && root.confirm-kind == 0; }
                         HorizontalLayout { spacing: 8px;
                             Action { text: root.english ? "Validate" : "驗證設定"; enabled: !root.busy && root.confirm-kind == 0; clicked => { root.validate(root.draft); } }
                             Action { text: root.english ? "Save…" : "儲存…"; suggested: true; enabled: !root.busy && root.dirty && root.confirm-kind == 0; restore-focus: root.confirm-kind == 0 && root.focus-return == 1; clicked => { root.focus-return = 1; root.confirm-kind = 1; } }
