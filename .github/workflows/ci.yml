@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -195,7 +196,51 @@ jobs:
         continue-on-error: true
         run: cargo test --locked -j1 -p screensense-platform windows_synthetic_ocr -- --ignored --nocapture --test-threads=1
 
+      - name: Determine whether verified recovery payload has identical runtime source
+        id: runtime_payload
+        shell: pwsh
+        run: |
+          $base = '88eefc986c1b10f79f57da73302291a49cbbef38'
+          git fetch --no-tags --depth=1 origin $base
+          if ($LASTEXITCODE -ne 0) { throw 'Recovery source revision fetch failed' }
+          $changes = git diff --name-only $base HEAD -- Cargo.toml Cargo.lock rust-toolchain rust-toolchain.toml .cargo crates
+          if ($LASTEXITCODE -ne 0) { throw 'Recovery runtime identity check failed' }
+          if ($changes) {
+            'reused=false' >> $env:GITHUB_OUTPUT
+            "binary_commit=$((git rev-parse HEAD).Trim())" >> $env:GITHUB_ENV
+          } else {
+            'reused=true' >> $env:GITHUB_OUTPUT
+            "binary_commit=$base" >> $env:GITHUB_ENV
+          }
+
+      - name: Download verified identical-source recovery payload
+        if: steps.runtime_payload.outputs.reused == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $env:SCREENSENSE_PAYLOAD_ARCHIVE = Join-Path $env:RUNNER_TEMP 'previous-installer-payload.zip'
+          python -c "import os,subprocess; f=open(os.environ['SCREENSENSE_PAYLOAD_ARCHIVE'],'wb'); p=subprocess.run(['gh','api','repos/stevenke1981/screensense/actions/artifacts/11769281598/zip'],stdout=f); f.close(); p.check_returncode()"
+          if ($LASTEXITCODE -ne 0) { throw 'Recovery payload download failed' }
+          $digest = (Get-FileHash -LiteralPath $env:SCREENSENSE_PAYLOAD_ARCHIVE -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($digest -ne '9b77d38e3ff2371a2405916e3adc00cfd8eae00eed8ca58dbd0c8a268c4310b9') { throw 'Recovery artifact digest mismatch' }
+          Expand-Archive -LiteralPath $env:SCREENSENSE_PAYLOAD_ARCHIVE -DestinationPath "$env:RUNNER_TEMP/previous-installer-payload"
+
+      - name: Restore recovered executables and validate origin
+        if: steps.runtime_payload.outputs.reused == 'true'
+        shell: pwsh
+        run: |
+          $previous = Join-Path $env:RUNNER_TEMP 'previous-installer-payload'
+          $info = Get-Content -LiteralPath "$previous/BUILD-INFO.json" -Raw | ConvertFrom-Json
+          if ($info.commit -ne $env:binary_commit -or $info.profile -ne 'release + crt-static') { throw 'Recovery origin or profile mismatch' }
+          if ((Get-FileHash -LiteralPath "$previous/screensense.exe" -Algorithm SHA256).Hash.ToLowerInvariant() -ne '915ab3073ff7e4db1f20135eccb05f36621f9f242d59611956c8793359324b8b') { throw 'Recovery CLI hash mismatch' }
+          if ((Get-FileHash -LiteralPath "$previous/screensense-gui.exe" -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'aa736e56394c173cc8500cc2d19101723b4422a06c30732f7fa8270bed8ea8c0') { throw 'Recovery GUI hash mismatch' }
+          $binaries = 'target/installer/x86_64-pc-windows-msvc/release'
+          New-Item -ItemType Directory -Path $binaries -Force | Out-Null
+          Copy-Item -LiteralPath "$previous/screensense.exe","$previous/screensense-gui.exe" -Destination $binaries
+
       - name: Build matching Windows installer and smoke payload (static CRT)
+        if: steps.runtime_payload.outputs.reused != 'true'
         env:
           CARGO_TARGET_DIR: target/installer
           RUSTFLAGS: -C target-feature=+crt-static
@@ -259,7 +304,7 @@ jobs:
           Copy-Item -LiteralPath "$env:RUNNER_TEMP/installer-dependencies/dependency-sources.zip" -Destination $recovery
           git archive --format=tar --output="$recovery/source.tar" HEAD
           if ($LASTEXITCODE -ne 0) { throw 'Recovery corresponding source archive failed' }
-          @{ commit=(git rev-parse HEAD).Trim(); purpose='verified release payload for packaging recovery, not the installer'; profile='release + crt-static' } | ConvertTo-Json | Set-Content -LiteralPath "$recovery/BUILD-INFO.json" -Encoding utf8
+          @{ commit=(git rev-parse HEAD).Trim(); binary_source_commit=$env:binary_commit; purpose='verified release payload for packaging recovery, not the installer'; profile='release + crt-static' } | ConvertTo-Json | Set-Content -LiteralPath "$recovery/BUILD-INFO.json" -Encoding utf8
 
       - name: Verified release payload for packaging recovery
         uses: actions/upload-artifact@v4
@@ -276,10 +321,10 @@ jobs:
           $compiler = 'C:/Program Files (x86)/Inno Setup 6/ISCC.exe'
           $binaries = 'target/installer/x86_64-pc-windows-msvc/release'
           $assets = Join-Path $env:RUNNER_TEMP 'installer-dependencies'
-          ./scripts/package-windows.ps1 -BinaryDir $binaries -DependencyDir $assets -OutputDir "$env:RUNNER_TEMP/windows-installer" -ExpectedCommit $sha -InnoCompiler $compiler
+          ./scripts/package-windows.ps1 -BinaryDir $binaries -DependencyDir $assets -OutputDir "$env:RUNNER_TEMP/windows-installer" -ExpectedCommit $sha -BinaryCommit $env:binary_commit -InnoCompiler $compiler
           $fixtureId = 'ScreenSense.fixture.'+[Guid]::NewGuid().ToString()
-          ./scripts/package-windows.ps1 -BinaryDir $binaries -DependencyDir $assets -OutputDir "$env:RUNNER_TEMP/installer-old" -ExpectedCommit $sha -InnoCompiler $compiler -AppIdentifier $fixtureId -Version '0.0.0-fixture' -VersionNumber '0.0.0.0'
-          ./scripts/package-windows.ps1 -BinaryDir $binaries -DependencyDir $assets -OutputDir "$env:RUNNER_TEMP/installer-upgrade" -ExpectedCommit $sha -InnoCompiler $compiler -AppIdentifier $fixtureId
+          ./scripts/package-windows.ps1 -BinaryDir $binaries -DependencyDir $assets -OutputDir "$env:RUNNER_TEMP/installer-old" -ExpectedCommit $sha -BinaryCommit $env:binary_commit -InnoCompiler $compiler -AppIdentifier $fixtureId -Version '0.0.0-fixture' -VersionNumber '0.0.0.0'
+          ./scripts/package-windows.ps1 -BinaryDir $binaries -DependencyDir $assets -OutputDir "$env:RUNNER_TEMP/installer-upgrade" -ExpectedCommit $sha -BinaryCommit $env:binary_commit -InnoCompiler $compiler -AppIdentifier $fixtureId
           @{ app_id=$fixtureId; commit=$sha } | ConvertTo-Json | Set-Content -LiteralPath "$env:RUNNER_TEMP/installer-fixture-identity.json" -Encoding utf8
 
       - name: Test isolated per-user installation, upgrade and uninstall

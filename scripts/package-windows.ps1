@@ -3,6 +3,7 @@ param(
     [Parameter(Mandatory=$true)][string]$OutputDir,
     [Parameter(Mandatory=$true)][string]$DependencyDir,
     [Parameter(Mandatory=$true)][ValidatePattern('^[0-9a-f]{40}$')][string]$ExpectedCommit,
+    [ValidatePattern('^(?:[0-9a-f]{40})?$')][string]$BinaryCommit = '',
     [string]$InnoCompiler = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe',
     [ValidatePattern('^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$')][string]$Version = '0.1.0-preview',
     [ValidatePattern('^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$')][string]$VersionNumber = '0.1.0.0',
@@ -14,6 +15,11 @@ $binaries = (Resolve-Path -LiteralPath $BinaryDir).Path
 $output = [System.IO.Path]::GetFullPath($OutputDir)
 $actualCommit = (& git -C $repo rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $actualCommit -ne $ExpectedCommit) { throw 'Packaging source commit mismatch' }
+if (-not $BinaryCommit) { $BinaryCommit=$ExpectedCommit }
+if ($BinaryCommit -ne $ExpectedCommit) {
+    $runtimeChanges = & git -C $repo diff --name-only $BinaryCommit $ExpectedCommit -- Cargo.toml Cargo.lock rust-toolchain rust-toolchain.toml .cargo crates
+    if ($LASTEXITCODE -ne 0 -or $runtimeChanges) { throw 'Recovered binary source differs from current runtime source' }
+}
 $dirty = & git -C $repo status --porcelain
 if ($LASTEXITCODE -ne 0 -or $dirty) { throw 'Commit the packaging source before building an installer' }
 if (-not (Test-Path -LiteralPath $InnoCompiler -PathType Leaf)) { throw "Inno Setup compiler missing: $InnoCompiler. See docs/WINDOWS-INSTALLER.md for official tooling." }
@@ -97,6 +103,8 @@ Copy-Item -LiteralPath (Join-Path $DependencyDir 'dependency-sources.zip') -Dest
 if ($LASTEXITCODE -ne 0) { throw 'Corresponding source archive failed' }
 $buildInfo = @{ commit=$ExpectedCommit; version=$Version; app_identifier=$AppIdentifier; architecture='windows-x86_64'; profile='release + crt-static'; signed=$false; source="https://github.com/stevenke1981/screensense/tree/$ExpectedCommit"; inno_compiler_version=$compilerVersion; cli_sha256=(Get-FileHash -LiteralPath $cli -Algorithm SHA256).Hash.ToLowerInvariant(); gui_sha256=(Get-FileHash -LiteralPath $gui -Algorithm SHA256).Hash.ToLowerInvariant(); dependency_sources_sha256=(Get-FileHash -LiteralPath (Join-Path $payload 'dependency-sources.zip') -Algorithm SHA256).Hash.ToLowerInvariant(); cli_pe=$cliPe; gui_pe=$guiPe }
 $buildInfo.source_sha256=(Get-FileHash -LiteralPath (Join-Path $payload 'source.tar') -Algorithm SHA256).Hash.ToLowerInvariant()
+$buildInfo.binary_source_commit=$BinaryCommit
+$buildInfo.runtime_source_identity='Cargo manifests/lock, toolchain config, .cargo and complete crates tree compared with packaging source'
 $buildInfo | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $payload 'BUILD-INFO.json') -Encoding utf8
 $stem = 'ScreenSense-'+$Version+'-'+$ExpectedCommit.Substring(0,7)+'-windows-x64-setup'
 & $InnoCompiler "/DPayloadDir=$payload" "/DOutputDir=$output" "/DAppVersion=$Version" "/DVersionNumber=$VersionNumber" "/DAppIdentifier=$AppIdentifier" "/DInstallerStem=$stem" (Join-Path $repo 'packaging/windows/screensense.iss')

@@ -84,7 +84,15 @@ $output = Join-Path $env:TEMP ('screensense-installer-'+[guid]::NewGuid().ToStri
 Check each command's exit status before proceeding. Keep build output outside
 tracked files. The script verifies a clean source tree and matching commit, but cannot
 independently prove an arbitrary externally supplied binary was built from that
-commit. CI builds and packages both binaries in the same checked-out job.
+commit. CI either builds both binaries in the checked-out job or verifies the
+recovery path described below.
+
+For packaging-only corrections, CI may reuse its verified release payload after
+checking that Cargo manifests/lock, toolchain configuration, `.cargo` and the
+complete `crates` tree are identical. It verifies the recovery artifact's pinned
+SHA-256 and runs the recovered CLI/GUI checks again. `binary_source_commit` records
+the original compiler commit separately from the current packaging `commit`.
+Runtime source changes require a fresh build.
 
 Windows may show an unknown-publisher or reputation warning for this unsigned
 preview. Compare its SHA-256 with the matching artifact provenance and follow
