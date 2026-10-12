@@ -221,11 +221,8 @@ export component AppWindow inherits Window {
                         Text { text: root.config-path; color: Theme.muted; wrap: word-wrap; font-size: 12px; }
                         TextEdit {
                             height: 240px; text <=> root.draft; enabled: !root.busy && root.confirm-kind == 0;
-                            accessible-role: text-input;
                             accessible-label: root.english ? "Configuration editor" : "設定編輯器";
-                            accessible-value: root.draft;
-                            accessible-enabled: !root.busy && root.confirm-kind == 0;
-                            accessible-read-only: root.busy || root.confirm-kind != 0;
+                            read-only: root.busy || root.confirm-kind != 0;
                             accessible-action-set-value(value) => {
                                 if(!root.busy && root.confirm-kind == 0) { root.draft = value; }
                             }
