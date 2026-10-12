@@ -246,6 +246,16 @@ jobs:
           python scripts/collect_dependency_sources.py "$assets/metadata.json" "$assets/dependency-sources.zip"
           if ($LASTEXITCODE -ne 0) { throw 'Corresponding dependency sources collection failed' }
 
+      - name: Verified release payload for packaging recovery
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer-payload
+          path: |
+            target/installer/x86_64-pc-windows-msvc/release/screensense.exe
+            target/installer/x86_64-pc-windows-msvc/release/screensense-gui.exe
+          retention-days: 7
+          if-no-files-found: error
+
       - name: Compile Inno Setup preview and separate fixture installers
         shell: pwsh
         run: |

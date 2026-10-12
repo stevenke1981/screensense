@@ -17,9 +17,28 @@ if ($LASTEXITCODE -ne 0 -or $actualCommit -ne $ExpectedCommit) { throw 'Packagin
 $dirty = & git -C $repo status --porcelain
 if ($LASTEXITCODE -ne 0 -or $dirty) { throw 'Commit the packaging source before building an installer' }
 if (-not (Test-Path -LiteralPath $InnoCompiler -PathType Leaf)) { throw "Inno Setup compiler missing: $InnoCompiler. See docs/WINDOWS-INSTALLER.md for official tooling." }
-$compilerVersion = (Get-Item -LiteralPath $InnoCompiler).VersionInfo.FileVersion
-$numericVersion = [regex]::Match(($compilerVersion -replace ',','.'),'[0-9]+\.[0-9]+\.[0-9]+(?:\.[0-9]+)?').Value
-if (-not $numericVersion -or [version]$numericVersion -lt [version]'6.3.0.0') { throw 'Inno Setup 6.3 or newer is required' }
+# ISCC's executable resource is the console frontend version, not the engine
+# version. Compile a fixed no-output stdin script to ask the actual engine.
+$probe = [System.Diagnostics.ProcessStartInfo]::new()
+$probe.FileName=$InnoCompiler
+$probe.Arguments='/O- -'
+$probe.UseShellExecute=$false
+$probe.CreateNoWindow=$true
+$probe.RedirectStandardInput=$true
+$probe.RedirectStandardOutput=$true
+$probe.RedirectStandardError=$true
+$probeProcess=[System.Diagnostics.Process]::Start($probe)
+$probeOut=$probeProcess.StandardOutput.ReadToEndAsync()
+$probeErr=$probeProcess.StandardError.ReadToEndAsync()
+$probeProcess.StandardInput.WriteLine("[Setup]`nAppName=ScreenSense compiler version probe`nAppVersion=0.0.0`nCreateAppDir=no`nUninstallable=no`nOutput=no`nPrivilegesRequired=lowest")
+$probeProcess.StandardInput.Close()
+if (-not $probeProcess.WaitForExit(30000)) { throw "Compiler version probe did not exit; PID $($probeProcess.Id). No force termination performed." }
+$probeText=$probeOut.GetAwaiter().GetResult()
+$probeError=$probeErr.GetAwaiter().GetResult()
+if ($probeProcess.ExitCode -ne 0) { throw "Inno engine probe failed: $probeError" }
+$compilerVersion=[regex]::Match($probeText,'Compiler engine version: Inno Setup ([0-9]+\.[0-9]+\.[0-9]+)').Groups[1].Value
+if (-not $compilerVersion -or [version]$compilerVersion -lt [version]'6.3.0') { throw "Inno Setup engine 6.3 or newer is required; detected '$compilerVersion'" }
+Write-Output "Inno Setup engine: $compilerVersion"
 
 function ReadPe([string]$path) {
     $bytes = [System.IO.File]::ReadAllBytes($path)
