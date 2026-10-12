@@ -246,13 +246,26 @@ jobs:
           python scripts/collect_dependency_sources.py "$assets/metadata.json" "$assets/dependency-sources.zip"
           if ($LASTEXITCODE -ne 0) { throw 'Corresponding dependency sources collection failed' }
 
+      - name: Prepare verified release payload and source for packaging recovery
+        shell: pwsh
+        run: |
+          $recovery = Join-Path $env:RUNNER_TEMP 'installer-payload'
+          New-Item -ItemType Directory -Path $recovery | Out-Null
+          Copy-Item -LiteralPath 'target/installer/x86_64-pc-windows-msvc/release/screensense.exe','target/installer/x86_64-pc-windows-msvc/release/screensense-gui.exe' -Destination $recovery
+          Copy-Item -LiteralPath 'crates/gui/LICENSE' -Destination "$recovery/LICENSE-GUI-GPL-3.0.txt"
+          Copy-Item -LiteralPath 'LICENSE' -Destination "$recovery/LICENSE-CORE-MIT.txt"
+          Copy-Item -LiteralPath 'THIRD-PARTY-NOTICES.md','packaging/windows/INSTALL-README.txt' -Destination $recovery
+          Copy-Item -LiteralPath "$env:RUNNER_TEMP/installer-dependencies/LICENSES" -Destination $recovery -Recurse
+          Copy-Item -LiteralPath "$env:RUNNER_TEMP/installer-dependencies/dependency-sources.zip" -Destination $recovery
+          git archive --format=tar --output="$recovery/source.tar" HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Recovery corresponding source archive failed' }
+          @{ commit=(git rev-parse HEAD).Trim(); purpose='verified release payload for packaging recovery, not the installer'; profile='release + crt-static' } | ConvertTo-Json | Set-Content -LiteralPath "$recovery/BUILD-INFO.json" -Encoding utf8
+
       - name: Verified release payload for packaging recovery
         uses: actions/upload-artifact@v4
         with:
           name: windows-installer-payload
-          path: |
-            target/installer/x86_64-pc-windows-msvc/release/screensense.exe
-            target/installer/x86_64-pc-windows-msvc/release/screensense-gui.exe
+          path: ${{ runner.temp }}/installer-payload/
           retention-days: 7
           if-no-files-found: error
 
