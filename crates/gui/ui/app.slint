@@ -219,7 +219,17 @@ export component AppWindow inherits Window {
                             Row { label: root.english ? "Retention: images / frames / timeline" : "保留時間：影像／影格／時間軸"; value: root.retention; }
                         } }
                         Text { text: root.config-path; color: Theme.muted; wrap: word-wrap; font-size: 12px; }
-                        TextEdit { height: 240px; text <=> root.draft; enabled: !root.busy && root.confirm-kind == 0; }
+                        TextEdit {
+                            height: 240px; text <=> root.draft; enabled: !root.busy && root.confirm-kind == 0;
+                            accessible-role: text-input;
+                            accessible-label: root.english ? "Configuration editor" : "設定編輯器";
+                            accessible-value: root.draft;
+                            accessible-enabled: !root.busy && root.confirm-kind == 0;
+                            accessible-read-only: root.busy || root.confirm-kind != 0;
+                            accessible-action-set-value(value) => {
+                                if(!root.busy && root.confirm-kind == 0) { root.draft = value; }
+                            }
+                        }
                         HorizontalLayout { spacing: 8px;
                             Action { text: root.english ? "Validate" : "驗證設定"; enabled: !root.busy && root.confirm-kind == 0; clicked => { root.validate(root.draft); } }
                             Action { text: root.english ? "Save…" : "儲存…"; suggested: true; enabled: !root.busy && root.dirty && root.confirm-kind == 0; restore-focus: root.confirm-kind == 0 && root.focus-return == 1; clicked => { root.focus-return = 1; root.confirm-kind = 1; } }
