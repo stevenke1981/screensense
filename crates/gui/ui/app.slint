@@ -15,8 +15,9 @@ component Action inherits Rectangle {
     in property<bool> enabled: true;
     in property<bool> restore-focus: false;
     forward-focus: focus;
-    changed restore-focus => { if(root.restore-focus && root.enabled) { focus.focus(); } }
-    changed enabled => { if(root.restore-focus && root.enabled) { focus.focus(); } }
+    callback focus-restored();
+    changed restore-focus => { if(root.restore-focus && root.enabled) { focus.focus(); root.focus-restored(); } }
+    changed enabled => { if(root.restore-focus && root.enabled) { focus.focus(); root.focus-restored(); } }
     callback clicked();
     min-width: 104px; preferred-width: max(104px, label.preferred-width + 28px);
     horizontal-stretch: 0; height: 36px;
@@ -184,7 +185,7 @@ export component AppWindow inherits Window {
                         HorizontalLayout { spacing: 8px;
                             Action { text: root.english ? "Pause 5 min" : "暫停 5 分鐘"; enabled: !root.busy && root.confirm-kind == 0; clicked => { root.pause(5); } }
                             Action { text: root.english ? "Pause 60 min" : "暫停 60 分鐘"; enabled: !root.busy && root.confirm-kind == 0; clicked => { root.pause(60); } }
-                            if root.paused-minutes > 0: Action { text: root.english ? "Clear pause" : "解除暫停"; enabled: !root.busy && root.confirm-kind == 0; restore-focus: root.confirm-kind == 0 && root.focus-return == 3; clicked => { root.focus-return = 3; root.confirm-kind = 3; } }
+                            if root.paused-minutes > 0: Action { text: root.english ? "Clear pause" : "解除暫停"; enabled: !root.busy && root.confirm-kind == 0; restore-focus: root.confirm-kind == 0 && root.focus-return == 3; focus-restored => { root.focus-return = 0; } clicked => { root.confirm-kind = 3; root.focus-return = 3; } }
                             Rectangle { horizontal-stretch: 1; background: transparent; }
                         }
                         Group { height: 204px; VerticalLayout { spacing: 0px;
@@ -194,7 +195,7 @@ export component AppWindow inherits Window {
                         } }
                         if root.policy-pending: HorizontalLayout { spacing: 8px;
                             Text { text: root.english ? "History is hidden until you confirm privacy cleanup." : "歷史已隱藏，待您確認隱私清理。"; wrap: word-wrap; color: Theme.ink; vertical-alignment: center; }
-                            Action { text: root.english ? "Review cleanup…" : "確認清理…"; enabled: !root.busy && root.confirm-kind == 0; restore-focus: root.confirm-kind == 0 && root.focus-return == 5; clicked => { root.focus-return = 5; root.confirm-kind = 5; } }
+                            Action { text: root.english ? "Review cleanup…" : "確認清理…"; enabled: !root.busy && root.confirm-kind == 0; restore-focus: root.confirm-kind == 0 && root.focus-return == 5; focus-restored => { root.focus-return = 0; } clicked => { root.confirm-kind = 5; root.focus-return = 5; } }
                         }
                         Text { text: root.english ? "Start the sensor explicitly with the existing CLI: screensense daemon start. This GUI does not manage daemon startup." : "如需開始錄製，請明確使用既有 CLI：screensense daemon start。本版介面不管理感測器啟動。"; color: Theme.muted; wrap: word-wrap; }
                     }
@@ -229,8 +230,8 @@ export component AppWindow inherits Window {
                         }
                         HorizontalLayout { spacing: 8px;
                             Action { text: root.english ? "Validate" : "驗證設定"; enabled: !root.busy && root.confirm-kind == 0; clicked => { root.validate(root.draft); } }
-                            Action { text: root.english ? "Save…" : "儲存…"; suggested: true; enabled: !root.busy && root.dirty && root.confirm-kind == 0; restore-focus: root.confirm-kind == 0 && root.focus-return == 1; clicked => { root.focus-return = 1; root.confirm-kind = 1; } }
-                            Action { text: root.english ? "Reload…" : "重新載入…"; enabled: !root.busy && root.confirm-kind == 0; restore-focus: root.confirm-kind == 0 && root.focus-return == 4; clicked => { if(root.dirty) { root.focus-return = 4; root.confirm-kind = 4; } else { root.refresh(true); } } }
+                            Action { text: root.english ? "Save…" : "儲存…"; suggested: true; enabled: !root.busy && root.dirty && root.confirm-kind == 0; restore-focus: root.confirm-kind == 0 && root.focus-return == 1; focus-restored => { root.focus-return = 0; } clicked => { root.confirm-kind = 1; root.focus-return = 1; } }
+                            Action { text: root.english ? "Reload…" : "重新載入…"; enabled: !root.busy && root.confirm-kind == 0; restore-focus: root.confirm-kind == 0 && root.focus-return == 4; focus-restored => { root.focus-return = 0; } clicked => { if(root.dirty) { root.confirm-kind = 4; root.focus-return = 4; } else { root.refresh(true); } } }
                             Rectangle { horizontal-stretch: 1; background: transparent; }
                         }
                     }
@@ -253,9 +254,9 @@ export component AppWindow inherits Window {
                         Text { text: root.english ? "Clear all removes recorded history, redacted images, search data and hook session history. It keeps configuration, sensitive-window marks, pause and stop requests. Deletion cannot be undone; it does not guarantee forensic erasure from backups or storage media." : "清除會刪除所有歷史、遮罩後影像、搜尋資料與 hook 工作階段。設定、敏感視窗標記、暫停及停止要求會保留。無法復原，也不保證備份或儲存媒體上的鑑識抹除。"; color: Theme.ink; wrap: word-wrap; }
                         if root.policy-pending: HorizontalLayout { spacing: 8px;
                             Text { text: root.english ? "Counts are hidden pending privacy cleanup." : "筆數已隱藏，待確認隱私清理。"; wrap: word-wrap; color: Theme.ink; vertical-alignment: center; }
-                            Action { text: root.english ? "Review cleanup…" : "確認清理…"; enabled: !root.busy && root.confirm-kind == 0; restore-focus: root.confirm-kind == 0 && root.focus-return == 5; clicked => { root.focus-return = 5; root.confirm-kind = 5; } }
+                            Action { text: root.english ? "Review cleanup…" : "確認清理…"; enabled: !root.busy && root.confirm-kind == 0; restore-focus: root.confirm-kind == 0 && root.focus-return == 5; focus-restored => { root.focus-return = 0; } clicked => { root.confirm-kind = 5; root.focus-return = 5; } }
                         }
-                        HorizontalLayout { Action { text: root.english ? "Clear all history…" : "清除所有歷史…"; destructive: true; enabled: !root.busy && root.confirm-kind == 0; restore-focus: root.confirm-kind == 0 && root.focus-return == 2; clicked => { root.focus-return = 2; root.confirm-kind = 2; } } Rectangle { horizontal-stretch: 1; background: transparent; } }
+                        HorizontalLayout { Action { text: root.english ? "Clear all history…" : "清除所有歷史…"; destructive: true; enabled: !root.busy && root.confirm-kind == 0; restore-focus: root.confirm-kind == 0 && root.focus-return == 2; focus-restored => { root.focus-return = 0; } clicked => { root.confirm-kind = 2; root.focus-return = 2; } } Rectangle { horizontal-stretch: 1; background: transparent; } }
                     }
                     if root.message != "": Text { text: root.message; color: Theme.ink; wrap: word-wrap; }
                     if root.busy: Text { text: root.english ? "Working…" : "處理中…"; color: Theme.muted; }

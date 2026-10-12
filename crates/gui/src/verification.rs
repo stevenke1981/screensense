@@ -10,10 +10,11 @@ use slint::{
     ComponentHandle,
 };
 use std::{
-    cell::{Cell, RefCell},
+    cell::Cell,
     fs,
     path::Path,
     rc::Rc,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -37,10 +38,12 @@ fn screenshot(ui: &AppWindow, path: &Path) -> Result<()> {
 }
 
 fn key(ui: &AppWindow, text: slint::SharedString) {
+    slint::platform::update_timers_and_animations();
     ui.window()
         .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: text.clone() });
     ui.window()
         .dispatch_event(slint::platform::WindowEvent::KeyReleased { text });
+    slint::platform::update_timers_and_animations();
 }
 
 fn backtab(ui: &AppWindow) {
@@ -126,8 +129,8 @@ fn exercise(ui: &AppWindow, service: &mut Service, output: &Path) -> Result<()> 
         bail!("save reply cleared a newer unsaved editor change");
     }
     ui.set_draft(format!("{baseline}\n# Owned focus test\n").into());
-    ui.set_focus_return(1);
     ui.set_confirm_kind(1);
+    ui.set_focus_return(1);
     key(ui, slint::platform::Key::Escape.into());
     key(ui, " ".into());
     if ui.get_confirm_kind() != 1 {
@@ -157,8 +160,8 @@ fn exercise(ui: &AppWindow, service: &mut Service, output: &Path) -> Result<()> 
     let counter = wipe_calls.clone();
     ui.on_wipe(move || counter.set(counter.get() + 1));
     ui.set_page(4);
-    ui.set_focus_return(2);
     ui.set_confirm_kind(2);
+    ui.set_focus_return(2);
     screenshot(ui, &output.join("04-delete-confirmation-zh.png"))?;
     ui.window()
         .dispatch_event(slint::platform::WindowEvent::KeyPressed {
@@ -172,6 +175,7 @@ fn exercise(ui: &AppWindow, service: &mut Service, output: &Path) -> Result<()> 
     }
     for backwards in [false, true] {
         ui.set_confirm_kind(2);
+        ui.set_focus_return(2);
         if backwards {
             ui.window()
                 .dispatch_event(slint::platform::WindowEvent::KeyPressed {
@@ -251,6 +255,15 @@ fn verify_small_window(ui: &AppWindow, output: &Path) -> Result<()> {
     screenshot(ui, &output.join("07-overview-1024x600.png"))
 }
 
+type NativeResult = Arc<Mutex<Option<Result<()>>>>;
+
+fn finish_native(sink: &NativeResult, value: Result<()>) {
+    if let Ok(mut result) = sink.lock() {
+        *result = Some(value);
+    }
+    let _ = slint::quit_event_loop();
+}
+
 pub fn run(output: &Path, native: bool) -> Result<()> {
     if std::env::var_os("SCREENSENSE_NO_SCREEN").is_none() {
         bail!("verification requires SCREENSENSE_NO_SCREEN");
@@ -276,15 +289,15 @@ pub fn run(output: &Path, native: bool) -> Result<()> {
     ui.set_message("隔離合成資料驗證 / Isolated synthetic fixture".into());
     ui.show()?;
     let result = if native {
-        let result = Rc::new(RefCell::new(None));
+        let result: NativeResult = Arc::new(Mutex::new(None));
         let sink = result.clone();
         let weak = ui.as_weak();
         let folder = output.clone();
-        let timer = slint::Timer::default();
-        timer.start(
-            slint::TimerMode::SingleShot,
-            Duration::from_millis(500),
-            move || {
+        slint::Timer::single_shot(Duration::from_millis(500), move || {
+            let dispatch_failure = sink.clone();
+            // Run outside a timer callback so verification can process deferred
+            // change handlers between input/refresh phases without timer recursion.
+            if let Err(error) = slint::invoke_from_event_loop(move || {
                 let check = weak
                     .upgrade()
                     .ok_or_else(|| anyhow::anyhow!("window closed before verification"))
@@ -294,8 +307,7 @@ pub fn run(output: &Path, native: bool) -> Result<()> {
                         Ok(())
                     });
                 if let Err(error) = check {
-                    *sink.borrow_mut() = Some(Err(error));
-                    let _ = slint::quit_event_loop();
+                    finish_native(&sink, Err(error));
                     return;
                 }
                 // Winit/X11 resizing is asynchronous. Let the native event loop
@@ -304,20 +316,20 @@ pub fn run(output: &Path, native: bool) -> Result<()> {
                 let weak = weak.clone();
                 let folder = folder.clone();
                 slint::Timer::single_shot(Duration::from_millis(150), move || {
-                    *sink.borrow_mut() = Some(
-                        weak.upgrade()
-                            .ok_or_else(|| {
-                                anyhow::anyhow!("window closed before resize verification")
-                            })
-                            .and_then(|ui| verify_small_window(&ui, &folder)),
-                    );
-                    let _ = slint::quit_event_loop();
+                    let check = weak
+                        .upgrade()
+                        .ok_or_else(|| anyhow::anyhow!("window closed before resize verification"))
+                        .and_then(|ui| verify_small_window(&ui, &folder));
+                    finish_native(&sink, check);
                 });
-            },
-        );
+            }) {
+                finish_native(&dispatch_failure, Err(error.into()));
+            }
+        });
         slint::run_event_loop()?;
         let completed = result
-            .borrow_mut()
+            .lock()
+            .map_err(|_| anyhow::anyhow!("native verification result lock failed"))?
             .take()
             .ok_or_else(|| anyhow::anyhow!("verification did not run"))?;
         completed
@@ -332,7 +344,7 @@ pub fn run(output: &Path, native: bool) -> Result<()> {
     let report = serde_json::json!({"result":"passed","renderer":"Slint software","native_window":native,
         "interaction":"internal action dispatcher + Slint key events; not physical mouse/keyboard",
         "screen_observation":"disabled","model_requests":false,"daemon_started":false,
-        "checks":["real rendered Chinese/English views","60 then 5 minute pause retains deadline","stale asynchronous result rejected","pending policy hides history without deleting it","cleanup requires confirmation","accessible editor changes enable Save; restoring baseline clears dirty state","Enter does not confirm deletion","Tab and Shift+Tab then Escape cancel deletion","cancel returns keyboard focus to initiating action","invalid regex clears data view","save repaired configuration","wipe preserves pause and stop","1024x600 rendering"]});
+        "checks":["real rendered Chinese/English views","60 then 5 minute pause retains deadline","stale asynchronous result rejected","pending policy hides history without deleting it","cleanup requires confirmation","accessible editor changes enable Save; restoring baseline clears dirty state","saved reply preserves newer unsaved draft","periodic refresh preserves user-transferred editor focus after Save Cancel","Enter does not confirm deletion","Tab and Shift+Tab then Escape cancel deletion","cancel returns keyboard focus to initiating action","invalid regex clears data view","save repaired configuration","wipe preserves pause and stop","1024x600 rendering"]});
     fs::write(
         output.join("verification.json"),
         serde_json::to_vec_pretty(&report)?,
