@@ -20,6 +20,7 @@ enum Action {
     Validate(String),
     Save(String),
     Wipe,
+    Cleanup,
     Stop,
 }
 
@@ -34,6 +35,7 @@ struct Reply {
 
 fn apply_snapshot(ui: &AppWindow, s: &Snapshot, reload: bool) {
     ui.set_usable(s.usable);
+    ui.set_policy_pending(s.policy_pending);
     ui.set_running(s.running);
     ui.set_stopped(s.stopped);
     ui.set_paused_minutes(s.paused_minutes);
@@ -71,6 +73,7 @@ fn apply_reply(ui: &AppWindow, current: u64, reply: Reply) {
         apply_snapshot(ui, &s, reply.reload);
     } else {
         ui.set_usable(false);
+        ui.set_policy_pending(false);
         ui.set_counts("".into());
         ui.set_notes(reply.message.clone().into());
     }
@@ -101,6 +104,9 @@ fn perform(service: &mut Service, action: Action, id: u64) -> Reply {
         Action::Wipe => service
             .wipe(true)
             .map(|_| "History cleared; pause and stop retained / 歷史已清除，暫停與停止要求保留"),
+        Action::Cleanup => service
+            .cleanup(true)
+            .map(|_| "Privacy cleanup completed / 隱私清理完成"),
         Action::Stop => Ok(""),
     };
     let success = result.is_ok();
@@ -225,6 +231,7 @@ fn run() -> anyhow::Result<()> {
     bind!(on_validate, |text| Action::Validate(text.to_string()));
     bind!(on_save, |text| Action::Save(text.to_string()));
     bind!(on_wipe, Action::Wipe);
+    bind!(on_cleanup, Action::Cleanup);
     ui.invoke_refresh(true);
     let timer = slint::Timer::default();
     let weak = ui.as_weak();

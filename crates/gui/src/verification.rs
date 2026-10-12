@@ -45,6 +45,13 @@ fn exercise(ui: &AppWindow, service: &mut Service, output: &Path) -> Result<()> 
         text: "Synthetic text with no private screen data".into(),
         ..Default::default()
     })?;
+    service
+        .store
+        .insight_insert(&screensense_core::types::Insight {
+            ts: screensense_core::now(),
+            doing: "Synthetic retained analysis".into(),
+            ..Default::default()
+        })?;
     // The same action dispatcher and result sink used by the asynchronous GUI.
     let old = perform(service, Action::Refresh(false), 1);
     let fresh = perform(service, Action::Pause(60), 2);
@@ -59,12 +66,33 @@ fn exercise(ui: &AppWindow, service: &mut Service, output: &Path) -> Result<()> 
         bail!("short pause reduced existing deadline");
     }
     screenshot(ui, &output.join("02-paused-zh.png"))?;
+    if !ui.get_policy_pending()
+        || ui.get_counts() != "0 / 0 / 0 / 0 / 0"
+        || service.store.history_counts()?[4] != 1
+    {
+        bail!("pending privacy policy exposed or deleted synthetic history");
+    }
+    ui.set_confirm_kind(5);
+    screenshot(ui, &output.join("08-privacy-cleanup-zh.png"))?;
+    ui.set_confirm_kind(0); // cancel leaves both frame and insight intact
+    if service.store.history_counts()?[4] != 1 {
+        bail!("cancelled cleanup deleted analysis");
+    }
+    apply_reply(ui, 4, perform(service, Action::Cleanup, 4));
+    if ui.get_policy_pending()
+        || service.store.history_counts()?[1] != 1
+        || service.store.history_counts()?[4] != 0
+    {
+        bail!("confirmed cleanup did not recheck privacy and remove derived analysis");
+    }
     ui.set_page(2);
     screenshot(ui, &output.join("03-preferences-zh.png"))?;
     // Observe the real destructive callback as well as the synthetic store.
     let wipe_calls = Rc::new(Cell::new(0_u32));
     let counter = wipe_calls.clone();
     ui.on_wipe(move || counter.set(counter.get() + 1));
+    ui.set_page(4);
+    ui.set_focus_return(2);
     ui.set_confirm_kind(2);
     screenshot(ui, &output.join("04-delete-confirmation-zh.png"))?;
     ui.window()
@@ -109,6 +137,17 @@ fn exercise(ui: &AppWindow, service: &mut Service, output: &Path) -> Result<()> 
         {
             bail!("Escape did not cancel deletion after Tab/Shift+Tab safely");
         }
+        ui.window()
+            .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: " ".into() });
+        ui.window()
+            .dispatch_event(slint::platform::WindowEvent::KeyReleased { text: " ".into() });
+        if ui.get_confirm_kind() != 2 || wipe_calls.get() != 0 {
+            bail!("cancel did not return keyboard focus to the initiating action");
+        }
+        ui.window()
+            .dispatch_event(slint::platform::WindowEvent::KeyPressed {
+                text: slint::platform::Key::Escape.into(),
+            });
     }
     let invalid = "[privacy]\nhidden_title_regex=['[']\n";
     fs::write(&service.config_path, invalid)?;
@@ -228,7 +267,7 @@ pub fn run(output: &Path, native: bool) -> Result<()> {
     let report = serde_json::json!({"result":"passed","renderer":"Slint software","native_window":native,
         "interaction":"internal action dispatcher + Slint key events; not physical mouse/keyboard",
         "screen_observation":"disabled","model_requests":false,"daemon_started":false,
-        "checks":["real rendered Chinese/English views","60 then 5 minute pause retains deadline","stale asynchronous result rejected","Enter does not confirm deletion","Escape cancels deletion","invalid regex clears data view","save repaired configuration","wipe preserves pause and stop","1024x600 rendering"]});
+        "checks":["real rendered Chinese/English views","60 then 5 minute pause retains deadline","stale asynchronous result rejected","pending policy hides history without deleting it","cleanup requires confirmation","Enter does not confirm deletion","Tab and Shift+Tab then Escape cancel deletion","cancel returns keyboard focus to initiating action","invalid regex clears data view","save repaired configuration","wipe preserves pause and stop","1024x600 rendering"]});
     fs::write(
         output.join("verification.json"),
         serde_json::to_vec_pretty(&report)?,

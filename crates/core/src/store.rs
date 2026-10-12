@@ -612,6 +612,20 @@ impl Store {
         Ok(())
     }
 
+    /// Fence in-flight work while replacing configuration, without deleting history.
+    /// The closure must not open another transaction. If it fails, the generation
+    /// change rolls back; existing insights and recording controls remain intact.
+    pub fn privacy_fenced<T>(
+        &self,
+        replace: impl FnOnce() -> crate::Result<T>,
+    ) -> crate::Result<T> {
+        let tx = self.immediate()?;
+        self.bump_privacy_revision()?;
+        let value = replace()?;
+        tx.commit()?;
+        Ok(value)
+    }
+
     fn recording_allowed(&self, revision: u64, now: Ts) -> crate::Result<bool> {
         let control = self.control()?;
         Ok(self.privacy_revision()? == revision
@@ -1528,6 +1542,34 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn gui_configuration_fence_retains_insights_and_rolls_back_failed_replace() {
+        let s = Store::open_in_memory().unwrap();
+        s.insight_insert(&Insight {
+            ts: 1.0,
+            doing: "Synthetic retained analysis".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        let revision = s.privacy_revision().unwrap();
+        let before = s.history_counts().unwrap();
+        let failed: crate::Result<()> = s.privacy_fenced(|| {
+            Err(crate::Error::other(
+                "synthetic configuration replacement failure",
+            ))
+        });
+        assert!(failed.is_err());
+        assert_eq!(s.privacy_revision().unwrap(), revision);
+        assert_eq!(s.history_counts().unwrap(), before);
+        s.privacy_fenced(|| Ok(())).unwrap();
+        assert!(s.privacy_revision().unwrap() > revision);
+        assert_eq!(s.history_counts().unwrap(), before);
+        assert!(s
+            .recording_write(revision, 2.0, || Ok(()))
+            .unwrap()
+            .is_none());
+    }
+
     #[test]
     fn release_regression_wipe_preserves_privacy_control() {
         let s = Store::open_in_memory().unwrap();

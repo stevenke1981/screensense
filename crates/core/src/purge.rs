@@ -172,6 +172,11 @@ fn error_must_go(privacy: &Privacy, e: &ErrorRec) -> bool {
     false
 }
 
+/// Read-only comparison for interfaces that must ask before deleting history.
+pub fn rules_changed(store: &Store, privacy: &Privacy) -> crate::Result<bool> {
+    Ok(store.meta_get(HASH_KEY)?.as_deref() != Some(privacy.rules_hash().as_str()))
+}
+
 /// Run purge() only when privacy.rules_hash() differs from meta "config.rules_hash"; store the new hash
 /// AFTER a successful purge (a crash mid-purge must re-run it). First run (no stored hash) also purges.
 pub fn purge_if_rules_changed(

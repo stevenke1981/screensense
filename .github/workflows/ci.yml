@@ -135,19 +135,7 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -j1 -- -D warnings
 
       - name: Tests
-        env:
-          SCREENSENSE_NO_SCREEN: "1"
-        run: |
-          # Review checkpoint: collect BOTH independent failures before exiting.
-          # The following repair restores the ordinary full-workspace test step.
-          $PSNativeCommandUseErrorActionPreference = $false
-          cargo test --locked -j1 -p screensense-gui review_regression -- --nocapture --test-threads=1
-          $regressionExit = $LASTEXITCODE
-          cargo build --locked -j1 -p screensense-gui
-          if ($LASTEXITCODE -ne 0) { throw 'GUI build failed before dialog regression' }
-          target\debug\screensense-gui.exe --verify-ui "$env:RUNNER_TEMP\gui-review-red"
-          $dialogExit = $LASTEXITCODE
-          if ($regressionExit -ne 0 -or $dialogExit -ne 0) { throw "Review regressions: data=$regressionExit dialog=$dialogExit" }
+        run: cargo test --workspace --locked -j1 -- --test-threads=1
 
       - name: Build GUI
         run: cargo build --locked -j1 -p screensense-gui

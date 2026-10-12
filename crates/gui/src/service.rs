@@ -14,6 +14,7 @@ use std::{
 #[derive(Clone, Debug, Serialize)]
 pub struct Snapshot {
     pub usable: bool,
+    pub policy_pending: bool,
     pub running: bool,
     pub stopped: bool,
     pub paused_minutes: i32,
@@ -109,6 +110,22 @@ impl Service {
         if current != self.baseline {
             bail!("configuration changed outside this editor; reload before saving");
         }
+        // Compare edited privacy policy, not the last cleanup hash. A built-in
+        // policy upgrade must not turn a language-only save into data deletion.
+        let privacy = Privacy::new(&cfg.privacy, &cfg.apps);
+        let privacy_changed = match current
+            .as_deref()
+            .map(|old| Config::from_toml(old.trim_start_matches('\u{feff}')))
+            .transpose()
+        {
+            Ok(old) => {
+                let old = old.unwrap_or_default();
+                Privacy::new(&old.privacy, &old.apps).rules_hash() != privacy.rules_hash()
+            }
+            // An unreadable old policy cannot establish a privacy edit. Save the
+            // repaired file, then require the separate history cleanup confirmation.
+            Err(_) => false,
+        };
         if let Ok(metadata) = fs::symlink_metadata(&self.config_path) {
             if metadata.file_type().is_symlink() {
                 bail!("refusing to replace a symlink configuration");
@@ -142,14 +159,17 @@ impl Service {
             file.write_all(text.as_bytes())?;
             file.sync_all()?;
             drop(file);
-            // Cancel in-flight work before changing policy. Existing daemon and MCP
-            // also compare their loaded config with the current file before writes/output.
-            self.store.invalidate_privacy()?;
-            replace(&temp, &self.config_path)?;
+            // Serialize file replacement with final recording writes. The fence
+            // rolls back on replacement failure and never deletes retained analysis.
+            self.store.privacy_fenced(|| {
+                replace(&temp, &self.config_path)?;
+                Ok(())
+            })?;
             self.baseline = Some(text.into());
-            let privacy = Privacy::new(&cfg.privacy, &cfg.apps);
-            purge::purge_if_rules_changed(&self.store, &privacy)
-                .context("configuration was saved but privacy cleanup failed; recording/history must remain blocked until cleanup succeeds")?;
+            if privacy_changed {
+                purge::purge_if_rules_changed(&self.store, &privacy)
+                    .context("configuration was saved but privacy cleanup failed; history views remain hidden until confirmed cleanup succeeds")?;
+            }
             Ok(())
         })();
         if temp.exists() {
@@ -180,11 +200,25 @@ impl Service {
         Ok(())
     }
 
+    /// An explicit confirmation covers matching history and all derived insights.
+    pub fn cleanup(&self, confirmed: bool) -> Result<()> {
+        if !confirmed {
+            bail!("privacy cleanup requires explicit confirmation");
+        }
+        let loaded = Config::load(&self.config_path);
+        if !loaded.usable() {
+            bail!("repair the invalid configuration before privacy cleanup");
+        }
+        let privacy = Privacy::new(&loaded.config.privacy, &loaded.config.apps);
+        purge::purge_if_rules_changed(&self.store, &privacy)?;
+        Ok(())
+    }
+
     pub fn snapshot(&mut self, reload_draft: bool) -> Result<Snapshot> {
         let loaded = Config::load(&self.config_path);
         let cfg = &loaded.config;
         let privacy = Privacy::new(&cfg.privacy, &cfg.apps);
-        let mut usable = loaded.usable();
+        let usable = loaded.usable();
         let mut notes = Vec::new();
         if let Some(error) = &loaded.error {
             notes.push(error.clone());
@@ -197,11 +231,15 @@ impl Service {
                 ));
             }
         }
-        if usable {
-            if let Err(error) = purge::purge_if_rules_changed(&self.store, &privacy) {
-                usable = false;
-                notes.push(error.to_string());
-            }
+        let counts = self.store.history_counts()?;
+        let policy_pending = usable
+            && counts.iter().any(|count| *count != 0)
+            && purge::rules_changed(&self.store, &privacy)?;
+        if policy_pending {
+            notes.push(
+                "History hidden pending confirmed privacy cleanup / 歷史已隱藏，待確認隱私清理"
+                    .into(),
+            );
         }
         let control = self.store.control()?;
         let hb = self.store.heartbeat()?;
@@ -210,8 +248,10 @@ impl Service {
             && hb
                 .as_ref()
                 .is_some_and(|h| screensense_platform::pid_alive(h.pid));
-        if let Some(h) = &hb {
-            notes.extend(h.notes.iter().cloned());
+        if usable && !policy_pending {
+            if let Some(h) = &hb {
+                notes.extend(h.notes.iter().cloned());
+            }
         }
         let platform = screensense_platform::create_platform();
         let caps = platform.capabilities(); // capability flags only, no observation
@@ -229,6 +269,7 @@ impl Service {
         };
         Ok(Snapshot {
             usable,
+            policy_pending,
             running,
             stopped: control.stop,
             paused_minutes: control
@@ -241,8 +282,8 @@ impl Service {
             backend: platform.name().into(),
             ocr: hb.as_ref().map_or_else(String::new, |h| h.ocr.clone()),
             can_capture: caps.capture,
-            counts: if usable {
-                self.store.history_counts()?
+            counts: if usable && !policy_pending {
+                counts
             } else {
                 [0; 5]
             },
@@ -316,10 +357,13 @@ mod tests {
     }
     #[test]
     fn review_regression_open_and_refresh_preserve_history_and_block_old_views() {
-        let (_t, mut s) = service();
+        let (t, s) = service();
         history_fixture(&s, true);
         let before = s.store.history_counts().unwrap();
         assert_eq!(before[4], 1);
+        let revision = s.store.privacy_revision().unwrap();
+        drop(s);
+        let mut s = Service::open(t.path().join("data"), t.path().join("config.toml")).unwrap();
         for reload in [true, false] {
             let view = s.snapshot(reload).unwrap();
             assert_eq!(
@@ -331,7 +375,67 @@ mod tests {
                 view.counts, [0; 5],
                 "pending privacy review must hide old counts"
             );
+            assert!(view.policy_pending);
+            assert_eq!(s.store.privacy_revision().unwrap(), revision);
         }
+    }
+
+    #[test]
+    fn language_only_save_does_not_approve_pending_builtin_policy_cleanup() {
+        let (_t, mut s) = service();
+        let text = history_fixture(&s, true);
+        s.read_draft().unwrap();
+        let before = s.store.history_counts().unwrap();
+        s.save(&text.replace("'en'", "'zh'"), true).unwrap();
+        assert_eq!(s.store.history_counts().unwrap(), before);
+        let view = s.snapshot(false).unwrap();
+        assert!(view.policy_pending);
+        assert_eq!(view.counts, [0; 5]);
+    }
+
+    #[test]
+    fn analyzer_endpoint_repair_preserves_analysis_when_privacy_is_unchanged() {
+        let (_t, mut s) = service();
+        history_fixture(&s, false);
+        let broken = "language='en'\n[capture]\nenabled=false\n[analyzer]\nenabled=true\nmodel='synthetic'\nurl='https://remote.invalid'\n";
+        assert!(Config::from_toml(broken).is_ok());
+        assert!(Service::validate(broken).is_err());
+        fs::write(&s.config_path, broken).unwrap();
+        s.read_draft().unwrap();
+        let before = s.store.history_counts().unwrap();
+        s.save(&broken.replace("enabled=true", "enabled=false"), true)
+            .unwrap();
+        assert_eq!(s.store.history_counts().unwrap(), before);
+    }
+
+    #[test]
+    fn repair_unparseable_toml_requires_separate_history_cleanup_confirmation() {
+        let (_t, mut s) = service();
+        let valid = history_fixture(&s, true);
+        fs::write(&s.config_path, "[privacy\n").unwrap();
+        s.read_draft().unwrap();
+        let before = s.store.history_counts().unwrap();
+        s.save(&valid, true).unwrap();
+        assert_eq!(s.store.history_counts().unwrap(), before);
+        assert!(s.snapshot(false).unwrap().policy_pending);
+    }
+
+    #[test]
+    fn pending_cleanup_requires_confirmation_and_retains_recording_controls() {
+        let (_t, mut s) = service();
+        history_fixture(&s, true);
+        s.pause(60).unwrap();
+        s.store.set_stop(true).unwrap();
+        let before = s.store.history_counts().unwrap();
+        let controls = s.store.control().unwrap();
+        assert!(s.cleanup(false).is_err());
+        assert_eq!(s.store.history_counts().unwrap(), before);
+        assert!(s.snapshot(false).unwrap().policy_pending);
+        s.cleanup(true).unwrap();
+        assert!(!s.snapshot(false).unwrap().policy_pending);
+        assert_eq!(s.store.history_counts().unwrap()[1], 1);
+        assert_eq!(s.store.history_counts().unwrap()[4], 0);
+        assert_eq!(s.store.control().unwrap(), controls);
     }
     #[test]
     fn review_regression_language_only_save_preserves_analysis() {
