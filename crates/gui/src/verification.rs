@@ -36,6 +36,25 @@ fn screenshot(ui: &AppWindow, path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn key(ui: &AppWindow, text: slint::SharedString) {
+    ui.window()
+        .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: text.clone() });
+    ui.window()
+        .dispatch_event(slint::platform::WindowEvent::KeyReleased { text });
+}
+
+fn backtab(ui: &AppWindow) {
+    ui.window()
+        .dispatch_event(slint::platform::WindowEvent::KeyPressed {
+            text: slint::platform::Key::Shift.into(),
+        });
+    key(ui, slint::platform::Key::Tab.into());
+    ui.window()
+        .dispatch_event(slint::platform::WindowEvent::KeyReleased {
+            text: slint::platform::Key::Shift.into(),
+        });
+}
+
 fn exercise(ui: &AppWindow, service: &mut Service, output: &Path) -> Result<()> {
     screenshot(ui, &output.join("01-overview-zh.png"))?;
     service.store.frame_insert(&NewFrame {
@@ -105,6 +124,32 @@ fn exercise(ui: &AppWindow, service: &mut Service, output: &Path) -> Result<()> 
     apply_reply(ui, 42, saved);
     if !ui.get_dirty() || ui.get_draft() != newer_draft {
         bail!("save reply cleared a newer unsaved editor change");
+    }
+    ui.set_draft(format!("{baseline}\n# Owned focus test\n").into());
+    ui.set_focus_return(1);
+    ui.set_confirm_kind(1);
+    key(ui, slint::platform::Key::Escape.into());
+    key(ui, " ".into());
+    if ui.get_confirm_kind() != 1 {
+        bail!("Save Cancel did not immediately restore the originating action focus");
+    }
+    key(ui, slint::platform::Key::Escape.into());
+    backtab(ui);
+    backtab(ui);
+    let before_input = ui.get_draft();
+    key(ui, "x".into());
+    if ui.get_draft() == before_input {
+        bail!("could not move keyboard focus from Save to the synthetic editor");
+    }
+    let before_refresh = ui.get_draft();
+    // The production timer's Refresh(false) performs exactly this busy/reply cycle.
+    ui.set_busy(true);
+    slint::platform::update_timers_and_animations();
+    apply_reply(ui, 43, perform(service, Action::Refresh(false), 43));
+    slint::platform::update_timers_and_animations();
+    key(ui, "y".into());
+    if ui.get_draft() == before_refresh {
+        bail!("periodic refresh stole the user's editor focus after Save Cancel");
     }
     ui.set_draft(baseline);
     // Observe the real destructive callback as well as the synthetic store.
