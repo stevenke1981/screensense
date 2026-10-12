@@ -30,7 +30,7 @@ $probe.RedirectStandardError=$true
 $probeProcess=[System.Diagnostics.Process]::Start($probe)
 $probeOut=$probeProcess.StandardOutput.ReadToEndAsync()
 $probeErr=$probeProcess.StandardError.ReadToEndAsync()
-$probeProcess.StandardInput.WriteLine("[Setup]`nAppName=ScreenSense compiler version probe`nAppVersion=0.0.0`nCreateAppDir=no`nUninstallable=no`nOutput=no`nPrivilegesRequired=lowest")
+$probeProcess.StandardInput.WriteLine("[Setup]`nAppName=ScreenSense compiler version probe`nAppVersion=0.0.0`nCreateAppDir=no`nUninstallable=no`nOutput=no`nOutputDir=`nOutputManifestFile=`nPrivilegesRequired=lowest")
 $probeProcess.StandardInput.Close()
 if (-not $probeProcess.WaitForExit(30000)) { throw "Compiler version probe did not exit; PID $($probeProcess.Id). No force termination performed." }
 $probeText=$probeOut.GetAwaiter().GetResult()
