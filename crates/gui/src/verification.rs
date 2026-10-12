@@ -10,7 +10,7 @@ use slint::{
     ComponentHandle,
 };
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     fs,
     path::Path,
     rc::Rc,
@@ -155,6 +155,54 @@ fn exercise(ui: &AppWindow, service: &mut Service, output: &Path) -> Result<()> 
         bail!("periodic refresh stole the user's editor focus after Save Cancel");
     }
     ui.set_draft(baseline);
+    // Confirmed Save must not leave a restoration request that steals the next edit.
+    let submitted = Rc::new(RefCell::new(None::<String>));
+    let sink = submitted.clone();
+    let weak = ui.as_weak();
+    ui.on_save(move |text| {
+        if let Some(ui) = weak.upgrade() {
+            ui.set_busy(true);
+        }
+        *sink.borrow_mut() = Some(text.to_string());
+    });
+    ui.set_draft(format!("{}\n# Confirmed owned save\n", ui.get_draft()).into());
+    ui.set_confirm_kind(1);
+    ui.set_focus_return(1);
+    key(ui, slint::platform::Key::Tab.into());
+    key(ui, slint::platform::Key::Tab.into());
+    key(ui, slint::platform::Key::Return.into());
+    let saved_text = submitted
+        .borrow_mut()
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("Confirm did not dispatch the synthetic Save"))?;
+    apply_reply(
+        ui,
+        44,
+        perform(service, Action::Save(saved_text.clone()), 44),
+    );
+    slint::platform::update_timers_and_animations();
+    if ui.get_dirty() {
+        bail!("confirmed Save did not establish a clean baseline");
+    }
+    let mut editor_reached = false;
+    for _ in 0..20 {
+        key(ui, slint::platform::Key::Tab.into());
+        let before = ui.get_draft();
+        key(ui, "q".into());
+        if ui.get_draft() != before {
+            editor_reached = true;
+            break;
+        }
+    }
+    if !editor_reached {
+        bail!("could not return to the editor after confirmed Save");
+    }
+    let first_character = ui.get_draft();
+    key(ui, "w".into());
+    if ui.get_draft() == first_character {
+        bail!("confirmed Save restoration stole the second editor character");
+    }
+    ui.set_draft(saved_text.into());
     // Observe the real destructive callback as well as the synthetic store.
     let wipe_calls = Rc::new(Cell::new(0_u32));
     let counter = wipe_calls.clone();
