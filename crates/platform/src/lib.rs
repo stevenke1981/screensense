@@ -24,6 +24,8 @@ mod x11;
 #[cfg(windows)]
 mod win;
 #[cfg(windows)]
+mod win_instance;
+#[cfg(windows)]
 mod win_misc;
 #[cfg(windows)]
 mod win_ocr;
@@ -193,4 +195,40 @@ pub fn restrict_dir(path: &Path) -> std::io::Result<()> {
     }
     let _ = path;
     Ok(())
+}
+
+/// Held while this process is the single running desktop window; dropping it
+/// releases the name.
+pub struct InstanceGuard {
+    #[cfg(windows)]
+    _mutex: win_instance::Mutex,
+}
+
+/// Claim the session-wide name `name` (a Windows named mutex, which installers
+/// can also look for). `Ok(None)` means another process holds it. On other
+/// systems there is no check and every process gets a guard.
+pub fn acquire_instance(name: &str) -> std::io::Result<Option<InstanceGuard>> {
+    #[cfg(windows)]
+    {
+        Ok(win_instance::acquire(name)?.map(|m| InstanceGuard { _mutex: m }))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = name;
+        Ok(Some(InstanceGuard {}))
+    }
+}
+
+/// Post a window message to a message-only window of class `class` owned by
+/// another process (Windows only; elsewhere it returns `false`).
+pub fn post_to_other_instance(class: &str, message: u32, lparam: isize) -> bool {
+    #[cfg(windows)]
+    {
+        win_instance::post_to_other(class, message, lparam)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (class, message, lparam);
+        false
+    }
 }
