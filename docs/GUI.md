@@ -4,18 +4,26 @@ ScreenSense includes an optional Slint desktop control window in `crates/gui`. I
 
 ## Build and launch
 
-Use the repository's Rust 1.89 toolchain and the locked dependency graph:
+Use Rust 1.92 or newer (the GUI's own minimum; the other crates keep 1.89) and the locked dependency graph:
 
 ```sh
 cargo run --locked -j1 -p screensense-gui
 cargo run --locked -j1 -p screensense-gui -- --lang en
 ```
 
-Traditional Chinese is the default. The second command selects English for that launch. The GUI uses Slint 1.15.1; the project workspace MSRV remains Rust 1.89. On Debian/Ubuntu, install the GUI build, X11 window-system, and CJK font dependencies with `sudo apt-get install libfontconfig1-dev libxkbcommon-x11-0 fonts-noto-cjk`. `libfontconfig1-dev` supplies the fontconfig development metadata needed by the build; `libxkbcommon-x11-0` is needed by the Linux GUI runtime; `fonts-noto-cjk` provides Traditional Chinese glyph fallback.
+Traditional Chinese is the default. The second command selects English for that launch; the globe button in the title bar switches at any time. `--minimized` starts with only the notification-area icon. The GUI uses Slint 1.18.1, whose built-in system tray needs Rust 1.92; the rest of the workspace keeps Rust 1.89. On Debian/Ubuntu, install the GUI build, X11 window-system, and CJK font dependencies with `sudo apt-get install libfontconfig1-dev libxkbcommon-x11-0 fonts-noto-cjk`. `libfontconfig1-dev` supplies the fontconfig development metadata needed by the build; `libxkbcommon-x11-0` is needed by the Linux GUI runtime; `fonts-noto-cjk` provides Traditional Chinese glyph fallback.
 
 When the window opens, the service reads the local config, opens the local store, reads control/heartbeat state, and queries platform capability flags. It does not start a daemon, inspect the foreground window, capture pixels, request OCR, call an analyzer/model, or manage a network connection. A configured analyzer endpoint is shown as configuration only. The GUI itself is subject to ScreenSense's self-application title-only privacy rule.
 
 The GUI does not install or start a daemon, configure an agent, add shell hooks, or enable autostart. Use the existing CLI explicitly for those workflows. Saving configuration can affect an already-running daemon; resuming can allow an already-running daemon to continue according to the saved configuration.
+
+## Window, tray and single instance
+
+The window is compact (400×660 by default, at least 360×560) and draws its own title bar: logo (its colour follows the sensor state), language, refresh, keep-on-top, minimise and close. Drag the title bar to move it. **Minimise** hides the window to the notification area; clicking the tray icon brings it back. The tray menu offers *Show*, *Pause 5 / 60 minutes*, *Clear pause…* (which opens the window's confirmation) and *Quit*. **Close** (or Alt+F4) quits the window; it never stops a running sensor. Light and dark follow the system colour scheme.
+
+Only one window runs per user session. It holds the named mutex `ScreenSenseGui-917fbe92-1d22-4f87-af47-e143e7eca3dd` (the installer's `AppMutex`); a second start wakes the first window and exits. On Windows the wake-up posts a tray click to Slint's tray message window (Slint 1.18.1 internals; checked again when Slint is upgraded). On other systems there is no instance check.
+
+The icons are SVG files in `crates/gui/ui/icons`; the installer icon `packaging/windows/screensense.ico` is rendered from `logo.svg`.
 
 ## The five pages
 
@@ -29,7 +37,7 @@ The overview is refreshed every two seconds while the window is idle. Snapshot r
 
 ## License scope
 
-`crates/gui` is GPL-3.0-only, with its license text in [`crates/gui/LICENSE`](../crates/gui/LICENSE). The existing `crates/cli`, `crates/core`, and `crates/platform` packages remain MIT licensed. The GUI pins Slint and `slint-build` to 1.15.1 and uses Slint under GPL-3.0-only. Upstream metadata offers GPL-3.0-only, royalty-free, and commercial license paths; this GUI selects GPL-3.0-only and does not accept Slint royalty-free or commercial license terms. See [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md), [Slint 1.15.1 package metadata](https://raw.githubusercontent.com/slint-ui/slint/v1.15.1/Cargo.toml), and [Slint licensing options](https://slint.dev/pricing).
+`crates/gui` is GPL-3.0-only, with its license text in [`crates/gui/LICENSE`](../crates/gui/LICENSE). The existing `crates/cli`, `crates/core`, and `crates/platform` packages remain MIT licensed. The GUI pins Slint and `slint-build` to 1.18.1 and uses Slint under GPL-3.0-only. Upstream metadata offers GPL-3.0-only, royalty-free, and commercial license paths; this GUI selects GPL-3.0-only and does not accept Slint royalty-free or commercial license terms. See [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md), [Slint 1.18.1 package metadata](https://raw.githubusercontent.com/slint-ui/slint/v1.18.1/Cargo.toml), and [Slint licensing options](https://slint.dev/pricing).
 
 ## CI verification steps
 
@@ -37,7 +45,7 @@ The [CI workflow](../.github/workflows/ci.yml) defines these checks for the GUI:
 
 - **Linux GUI job:** installs `tesseract-ocr`, `xvfb`, `fonts-noto-cjk`, `libfontconfig1-dev`, and `libxkbcommon-x11-0`; runs formatting, workspace clippy/tests, builds `screensense-gui`, then runs `--verify-native` under Xvfb with `SCREENSENSE_NO_SCREEN=1`. It uploads the generated PNGs and `verification.json`.
 - **Windows job:** runs workspace clippy/tests, builds `screensense-gui`, then runs `--verify-ui` with `SCREENSENSE_NO_SCREEN=1` and uploads its rendered PNGs and `verification.json`.
-- **MSRV job:** uses Rust 1.89, installs `libfontconfig1-dev`, and runs `cargo check --workspace --all-targets --locked -j1`.
+- **MSRV job:** checks everything except the GUI with Rust 1.89 and the GUI with Rust 1.92 (`--locked -j1`).
 
 Earlier runs [38162265291](https://github.com/stevenke1981/screensense/actions/runs/38162265291) and [38163982183](https://github.com/stevenke1981/screensense/actions/runs/38163982183) exposed a missing Linux `libxkbcommon-x11-0` dependency and GUI privacy/focus regressions. Candidate `747cc1525108a8fa744ac29f5765ff24de56de49` passed [CI run 38272721986](https://github.com/stevenke1981/screensense/actions/runs/38272721986): Windows, Linux, and Rust 1.89 MSRV jobs all succeeded. Linux Xvfb verification included the GUI plus backend, daemon, and doctor end-to-end checks. The downloaded `windows-gui-tested` artifact's `BUILD-INFO` and `SHA256SUMS` were verified; its executable SHA-256 was `2268f4e7993a3b668cfc2c1f44cab8eaa1edf0b7967a8ff098b7ceab564cf6dd`.
 
@@ -67,4 +75,4 @@ cargo run --locked -j1 -p screensense-gui -- --verify-native .\gui-native-fixtur
 
 The output directory must not exist yet. `--verify-ui` uses Slint's software renderer without a native OS window; `--verify-native` opens the app in a native Winit window and still uses the software renderer. It displays the app's own GUI window only and does not capture the desktop. On shells other than PowerShell, set `SCREENSENSE_NO_SCREEN=1` using that shell's environment-variable syntax before running the same Cargo arguments.
 
-Candidate `747cc15`'s scripted `--verify-native` checks exited 0. They exercised Chinese and English rendering, synthetic status, pause extension behavior, stale-response rejection, pending cleanup without deletion, confirmed cleanup, invalid-regex count clearing, non-privacy save preservation, config replacement failure rollback, wipe preserving pause and stop, modal Tab/Shift+Tab and Escape behavior, focus return after Cancel, and a 1024×600 render. The later Confirm-save regression also passed Windows software/release GUI verification and Linux Xvfb in run 38288020182. These checks use the internal dispatcher and Slint key events, not physical input or general desktop UI Automation. Real-OS foreground focus remains unverified as described above.
+Candidate `747cc15`'s scripted `--verify-native` checks exited 0. They exercised Chinese and English rendering, synthetic status, pause extension behavior, stale-response rejection, pending cleanup without deletion, confirmed cleanup, invalid-regex count clearing, non-privacy save preservation, config replacement failure rollback, wipe preserving pause and stop, modal Tab/Shift+Tab and Escape behavior, focus return after Cancel, and a 1024×600 render (since v0.2.0's compact window: 360×560). The later Confirm-save regression also passed Windows software/release GUI verification and Linux Xvfb in run 38288020182. These checks use the internal dispatcher and Slint key events, not physical input or general desktop UI Automation. Real-OS foreground focus remains unverified as described above.

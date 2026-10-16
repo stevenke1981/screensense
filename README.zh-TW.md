@@ -2,9 +2,9 @@
 
 [English](README.md) | 繁體中文
 
-ScreenSense 是一套選用式的本機螢幕情境工具：它辨識目前前景視窗與畫面文字，將經隱私過濾的短期紀錄存入本機 SQLite，並提供摘要給 AI 程式開發代理。代理可透過 hook 在每次提示時收到摘要，或透過 MCP 按需查詢。CLI 是 Rust 執行檔 `screensense`，另有可由原始碼建置的 Slint 桌面 GUI；CLI 支援 OpenCode、Claude Code、Codex CLI、Gemini CLI，以及其他支援 MCP 的工具。
+ScreenSense 是一套選用式的本機螢幕情境工具：它辨識目前前景視窗與畫面文字，將經隱私過濾的短期紀錄存入本機 SQLite，並提供摘要給 AI 程式開發代理。代理可透過 hook 在每次提示時收到摘要，或透過 MCP 按需查詢。CLI 是 Rust 執行檔 `screensense`；`screensense-gui` 是可縮到系統匣的精簡 Slint 視窗（選用）；CLI 支援 OpenCode、Claude Code、Codex CLI、Gemini CLI，以及其他支援 MCP 的工具。
 
-已公開的 v0.1.0 壓縮檔只含 CLI，不含 GUI。Slint GUI 仍在開發分支 `feature/slint-gnome-gui`，尚未合併到 `main`，也尚未發行。v0.1.0 CLI 提供七個 MCP 工具，沒有 `screen_resume`；要提早恢復只能由使用者執行 `screensense resume`。
+自 v0.2.0 起，Windows 發行版另附 Inno Setup 個人安裝程式，內含 CLI 與 GUI；ZIP 與 Linux 壓縮檔只含 CLI。CLI 提供七個 MCP 工具，沒有 `screen_resume`；要提早恢復只能由使用者執行 `screensense resume`。
 
 > **狀態：v0.1.0。啟用擷取前請先閱讀限制。**
 >
@@ -61,7 +61,7 @@ cargo install --git https://github.com/stevenke1981/screensense --tag v0.1.0 --l
 
 ## 選用桌面 GUI
 
-原始碼另含 Slint 桌面控制視窗；需使用 Rust 1.89 或更新版本建置並啟動：
+原始碼另含 Slint 桌面控制視窗：精簡小視窗、自繪標題列、SVG 圖示、淺色／深色跟隨系統；按「縮小」會收進系統匣，點系統匣圖示即可叫回，選單可暫停 5／60 分鐘、解除暫停（需在視窗確認）或結束；`--minimized` 啟動時只顯示系統匣圖示；同一工作階段只會開一個視窗。Windows 安裝程式已內含；從原始碼建置需 Rust 1.92 或更新版本（詳見 [docs/GUI.md](docs/GUI.md)）：
 
 ```sh
 cargo run --locked -j1 -p screensense-gui

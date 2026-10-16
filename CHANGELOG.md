@@ -4,6 +4,34 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.2.0
+
+Release version: `0.2.0` (tag target: `v0.2.0`).
+
+### Added
+
+- `screensense-gui` (GPL-3.0-only): compact Slint window with a custom title
+  bar, SVG icon set, light/dark themes, status card with pause controls,
+  stored-history tiles and five tabbed pages (overview, capture, settings,
+  diagnostics, stored data).
+- Notification-area icon (Slint `SystemTrayIcon`): minimise to tray, restore
+  by clicking the icon, tray menu with show, pause, clear pause (confirmed in
+  the window) and quit; `--minimized` starts in the tray.
+- Single instance per session: named mutex
+  `ScreenSenseGui-917fbe92-1d22-4f87-af47-e143e7eca3dd`; a second start wakes
+  the running window. New `screensense_platform::acquire_instance` and
+  `post_to_other_instance`.
+- Windows Inno Setup installer attached to the GitHub release, with an
+  optional "start in the notification area at sign-in" task (GUI only, never
+  the daemon), a launch checkbox and `AppMutex`.
+
+### Changed
+
+- GUI upgraded from Slint 1.15.1 to 1.18.1; the GUI crate needs Rust 1.92
+  (the rest of the workspace keeps 1.89; CI checks both).
+- Release GUI builds use the Windows GUI subsystem (no console window).
+- Upstream dependency notices re-collected for the new dependency graph.
+
 ## 0.1.0
 
 Release version: `0.1.0` (tag target: `v0.1.0`).

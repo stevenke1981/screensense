@@ -277,7 +277,10 @@ jobs:
       - name: Verify release GUI payload with observation disabled
         env:
           SCREENSENSE_NO_SCREEN: "1"
-        run: target\installer\x86_64-pc-windows-msvc\release\screensense-gui.exe --verify-ui "$env:RUNNER_TEMP\gui-installer-payload"
+        # A release GUI uses the Windows subsystem; piping makes PowerShell wait for it.
+        run: |
+          target\installer\x86_64-pc-windows-msvc\release\screensense-gui.exe --verify-ui "$env:RUNNER_TEMP\gui-installer-payload" | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw "release GUI verification exited $LASTEXITCODE" }
 
       - name: Collect original dependency notices and corresponding sources
         shell: pwsh
@@ -314,14 +317,17 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-      - name: Compile Inno Setup preview and separate fixture installers
+      - name: Compile the Inno Setup installer and separate fixture installers
         shell: pwsh
         run: |
           $sha = (git rev-parse HEAD).Trim()
           $compiler = 'C:/Program Files (x86)/Inno Setup 6/ISCC.exe'
           $binaries = 'target/installer/x86_64-pc-windows-msvc/release'
           $assets = Join-Path $env:RUNNER_TEMP 'installer-dependencies'
-          ./scripts/package-windows.ps1 -BinaryDir $binaries -DependencyDir $assets -OutputDir "$env:RUNNER_TEMP/windows-installer" -ExpectedCommit $sha -BinaryCommit $env:binary_commit -InnoCompiler $compiler
+          # The installer carries the version the CLI reports, never a stale default.
+          $version = ((& "$binaries/screensense.exe" --version) -replace '^screensense\s+','').Trim()
+          if ($LASTEXITCODE -ne 0 -or $version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw "Unexpected CLI version '$version'" }
+          ./scripts/package-windows.ps1 -BinaryDir $binaries -DependencyDir $assets -OutputDir "$env:RUNNER_TEMP/windows-installer" -ExpectedCommit $sha -BinaryCommit $env:binary_commit -InnoCompiler $compiler -Version $version -VersionNumber "$version.0"
           $fixtureId = 'ScreenSense.fixture.'+[Guid]::NewGuid().ToString()
           ./scripts/package-windows.ps1 -BinaryDir $binaries -DependencyDir $assets -OutputDir "$env:RUNNER_TEMP/installer-old" -ExpectedCommit $sha -BinaryCommit $env:binary_commit -InnoCompiler $compiler -AppIdentifier $fixtureId -Version '0.0.0-fixture' -VersionNumber '0.0.0.0'
           ./scripts/package-windows.ps1 -BinaryDir $binaries -DependencyDir $assets -OutputDir "$env:RUNNER_TEMP/installer-upgrade" -ExpectedCommit $sha -BinaryCommit $env:binary_commit -InnoCompiler $compiler -AppIdentifier $fixtureId
@@ -335,7 +341,7 @@ jobs:
           $upgrade = (Get-ChildItem -LiteralPath "$env:RUNNER_TEMP/installer-upgrade" -Filter '*.exe' -File).FullName
           ./scripts/verify-windows-installer.ps1 -InitialInstaller $old -UpgradeInstaller $upgrade -OutputRoot "$env:RUNNER_TEMP/installer-tests" -FixtureAppId $identity.app_id -ExpectedCommit $identity.commit
 
-      - name: Windows Inno Setup preview, SHA256 and provenance
+      - name: Windows Inno Setup installer, SHA256 and provenance
         uses: actions/upload-artifact@v4
         with:
           name: windows-installer
@@ -376,7 +382,7 @@ jobs:
           if-no-files-found: warn
 
   msrv:
-    name: MSRV (Rust 1.89)
+    name: MSRV (Rust 1.89; GUI 1.92)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -391,7 +397,13 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@1.89
 
+      - uses: dtolnay/rust-toolchain@1.92
+
       - uses: Swatinem/rust-cache@v2
 
-      - name: Check
-        run: cargo check --workspace --all-targets --locked -j1
+      # Slint 1.18 (system tray) needs Rust 1.92, so the GUI has its own floor.
+      - name: Check (Rust 1.89, everything but the GUI)
+        run: cargo +1.89 check --workspace --all-targets --locked -j1 --exclude screensense-gui
+
+      - name: Check the GUI (Rust 1.92)
+        run: cargo +1.92 check -p screensense-gui --all-targets --locked -j1

@@ -2,9 +2,9 @@
 
 English | [繁體中文](README.zh-TW.md)
 
-ScreenSense is an opt-in local screen context tool. It identifies the foreground window and visible text, keeps a short, privacy-filtered history in local SQLite, and provides a compact summary to AI coding agents through a hook or MCP. The CLI is the Rust binary `screensense`; an optional Slint desktop GUI can be built from source. The CLI works with OpenCode, Claude Code, Codex CLI, Gemini CLI, and other MCP clients.
+ScreenSense is an opt-in local screen context tool. It identifies the foreground window and visible text, keeps a short, privacy-filtered history in local SQLite, and provides a compact summary to AI coding agents through a hook or MCP. The CLI is the Rust binary `screensense`; `screensense-gui` is an optional compact Slint window with a notification-area icon. The CLI works with OpenCode, Claude Code, Codex CLI, Gemini CLI, and other MCP clients.
 
-The published v0.1.0 archives contain the CLI and do not include the GUI. The Slint GUI is under development on `feature/slint-gnome-gui`; it has not been merged into `main` or released. The v0.1.0 CLI exposes seven MCP tools and has no `screen_resume` tool; resume is available only through the user CLI.
+From v0.2.0 the Windows release also has a per-user Inno Setup installer with both programs; the ZIP and Linux archives contain the CLI. The v0.1.0 CLI exposes seven MCP tools and has no `screen_resume` tool; resume is available only through the user CLI.
 
 > **Status: v0.1.0. Read the limits before enabling capture.**
 >
@@ -63,7 +63,7 @@ Neither install script starts the daemon, edits an AI tool's configuration or en
 
 ## Optional desktop GUI
 
-The source tree includes an optional Slint desktop control window. Build and open it with Rust 1.89 or newer:
+The source tree includes an optional Slint desktop control window (a small window that minimises to the notification area; see [docs/GUI.md](docs/GUI.md)). The Windows installer contains it. Build and open it from source with Rust 1.92 or newer:
 
 ```sh
 cargo run --locked -j1 -p screensense-gui

@@ -1,8 +1,9 @@
 name: Release
 
-# Pushing a tag such as v0.1.0 builds both archives and publishes a GitHub
-# release. Running the workflow by hand builds the same archives and keeps
-# them as workflow artifacts only.
+# Pushing a tag such as v0.2.0 builds both archives, takes the Windows
+# installer that the validated CI run built and tested (artifact
+# `windows-installer`), and publishes a GitHub release. Running the workflow by
+# hand builds the same files and keeps them as workflow artifacts only.
 on:
   push:
     tags: ["v*"]
@@ -116,16 +117,42 @@ jobs:
         with:
           ref: ${{ github.sha }}
 
+      # Only the per-target archives (artifacts named screensense-<target>);
+      # CI's other artifacts (fixtures, evidence, payload) are not released.
       - uses: actions/download-artifact@v4
         with:
+          pattern: screensense-*
           path: dist
           merge-multiple: true
+
+      # Built, installed, upgraded and uninstalled by the `validate` job of this
+      # same run, so it is the tested installer for this commit.
+      - name: Download Windows installer from the validated run
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-installer
+          path: dist
+
+      - name: Check Windows installer files
+        run: |
+          set -eu
+          cd dist
+          test "$(ls ScreenSense-*-windows-x64-setup.exe | wc -l)" = 1
+          test "$(ls ScreenSense-*-windows-x64-setup.sha256 | wc -l)" = 1
+          test "$(ls ScreenSense-*-windows-x64-setup.build.json | wc -l)" = 1
+          # The .sha256 file is written by PowerShell and has CRLF line endings.
+          sed 's/[[:cntrl:]]$//' ScreenSense-*-windows-x64-setup.sha256 | sha256sum -c -
+          jq -e --arg sha '${{ github.sha }}' '.commit == $sha and .signed == false' ScreenSense-*-windows-x64-setup.build.json
+          if [ '${{ github.ref_type }}' = tag ]; then
+            tag='${{ github.ref_name }}'
+            jq -e --arg v "${tag#v}" '.version == $v' ScreenSense-*-windows-x64-setup.build.json
+          fi
 
       - name: Write SHA256SUMS
         run: |
           set -eu
           cd dist
-          sha256sum screensense-*.zip screensense-*.tar.gz package-smoke-*.json > SHA256SUMS
+          sha256sum screensense-*.zip screensense-*.tar.gz package-smoke-*.json ScreenSense-*-windows-x64-setup.exe > SHA256SUMS
           cat SHA256SUMS
 
       # Manual runs: keep everything as one artifact, publish nothing.
@@ -143,6 +170,9 @@ jobs:
             dist/screensense-*.zip
             dist/screensense-*.tar.gz
             dist/package-smoke-*.json
+            dist/ScreenSense-*-windows-x64-setup.exe
+            dist/ScreenSense-*-windows-x64-setup.sha256
+            dist/ScreenSense-*-windows-x64-setup.build.json
             dist/SHA256SUMS
           fail_on_unmatched_files: true
           body_path: docs/RELEASE-NOTES.md

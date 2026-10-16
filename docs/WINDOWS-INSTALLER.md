@@ -1,28 +1,68 @@
-# Windows installer preview
+# Windows installer
 
-The `feature/slint-gnome-gui` branch builds an unsigned Windows x64 Inno Setup
-preview containing matching `screensense.exe` and `screensense-gui.exe`. It is a
-CI artifact, not a new GitHub Release. The published v0.1.0 archives remain CLI
-packages. Windows 10 or later on x64 is required; ARM64 is not declared supported.
+From v0.2.0 the GitHub Release carries an unsigned Windows x64 Inno Setup
+installer, `ScreenSense-<version>-<commit>-windows-x64-setup.exe`, with matching
+`screensense.exe` (CLI, MIT) and `screensense-gui.exe` (GUI, GPL-3.0-only). The
+release also attaches `<installer>.sha256`, `<installer>.build.json` provenance,
+and lists the installer in `SHA256SUMS`. The `.zip` / `.tar.gz` archives remain
+CLI-only packages. Windows 10 or later on x64 is required; ARM64 is not declared
+supported. The installer is built and tested by the same CI run that validates
+the tagged commit (artifact `windows-installer`).
 
-The installer defaults to `%LOCALAPPDATA%\Programs\ScreenSense` with
-`PrivilegesRequired=lowest`. It installs for the current user, offers an optional
-desktop shortcut, and registers the standard per-user uninstaller. It does not
-launch either application, start recording or a daemon, install a service, enable
-autostart, modify PATH or shell profiles, or configure persistent MCP. Close your
-own ScreenSense processes before upgrading; setup does not force-close them.
+## Install
 
-Configuration and data live outside the installation directory. Upgrade and
-uninstall preserve them. Uninstall removes the files that setup installed and
-leaves unrelated files in the installation directory. The installer cannot erase
-backups or guarantee forensic deletion. The GUI's explicit history controls are
-separate from uninstall.
+The installer is **unsigned**. Windows SmartScreen or a reputation prompt may
+show "unknown publisher"; choose "More info" only after you have checked the
+SHA-256 below and your own policy allows it. Nothing here disables or bypasses
+Windows protection.
+
+Verify the download in PowerShell, then compare with the `.sha256` file (and the
+release's `SHA256SUMS`):
+
+```powershell
+(Get-FileHash .\ScreenSense-0.2.0-<commit>-windows-x64-setup.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+Get-Content .\ScreenSense-0.2.0-<commit>-windows-x64-setup.sha256
+```
+
+Installation is per user (`PrivilegesRequired=lowest`, no administrator prompt)
+into `%LOCALAPPDATA%\Programs\ScreenSense` by default, with a Start Menu entry
+and the standard per-user uninstaller. Wizard languages: English (the official
+Inno Setup distribution has no Traditional Chinese message file, so none is
+bundled; the GUI itself has its own language setting).
+
+Optional wizard items, all off by default except where noted:
+
+- **Create a desktop shortcut** (unchecked).
+- **Start ScreenSense in the notification area when I sign in** (unchecked).
+  Writes one value, `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
+  `ScreenSenseGui` = `"<install dir>\screensense-gui.exe" --minimized`. This only
+  opens the GUI as a tray icon. It never starts the recording daemon; recording
+  remains a separate, explicit step. Uninstall removes the value. The name is
+  shared by every ScreenSense install of the current user.
+- **Launch ScreenSense** on the last page (checked, not run in silent installs).
+  Opening the GUI does not start recording.
+
+The setup and the uninstaller use the GUI's named mutex
+(`ScreenSenseGui-917fbe92-1d22-4f87-af47-e143e7eca3dd`, held while the GUI runs,
+including when it sits in the tray). If it is held, they ask you to close
+ScreenSense first (its window or notification-area icon) and then retry; a silent run exits with a
+non-zero code instead. Setup never force-closes applications
+(`CloseApplications=no`). Close a separately started CLI daemon yourself too.
+
+It does not start recording or a daemon, install a service, enable daemon
+autostart, modify PATH or shell profiles, or configure MCP. Exactly what setup
+manages: program files, shortcuts, the uninstall registration and the optional
+Run value above.
+
+Configuration and data live outside the installation directory
+(`%APPDATA%\screensense\config.toml`, `%LOCALAPPDATA%\screensense`). Upgrade and
+uninstall keep them. Uninstall removes the files setup installed, the shortcuts,
+the uninstall registration and the Run value, and leaves unrelated files in the
+installation directory. It is not a data wipe and cannot erase backups; the
+GUI's explicit history controls (or `screensense purge`) are separate.
 
 ## Contents and verification
 
-When the installer job finishes successfully, its workflow artifact is named `windows-installer`. The artifact contains the Inno Setup `.exe`, a matching `.sha256` file, and `.build.json` provenance. CI artifacts are temporary workflow outputs, not GitHub Release assets. The separate `windows-installer-fixtures` artifact is for CI upgrade testing and is not the preview installer for users. The workflow also uploads `windows-installer-verification` test evidence.
-
-Each artifact contains the setup EXE, a SHA-256 file and `.build.json` provenance.
 The installed `BUILD-INFO.json` records the source commit and both binary hashes.
 Both binaries are built in release mode with a static CRT; packaging rejects
 regular imports of the Visual C++ runtime DLLs instead of installing an elevated
@@ -46,10 +86,13 @@ copyright notice.
 
 CI verifies the release GUI through internal Slint key events with screen
 observation disabled. It then builds two installers with a new, fixture-only
-AppId, installs into a new fixture directory, runs the installed CLI and GUI,
-seeds synthetic SQLite history, upgrades the fixture version, and uninstalls.
-It checks retention of configuration, frame/insight rows, pause/stop controls and
-an unrelated file. The version transition uses identical-source binaries; it does
+AppId, installs into a new fixture directory with the default tasks, checks the
+installed icon and that no sign-in Run value was created, runs the installed CLI
+and GUI, seeds synthetic SQLite history, upgrades the fixture version, and
+uninstalls. It checks retention of configuration, frame/insight rows, pause/stop
+controls and an unrelated file. The optional sign-in task is not exercised in CI
+because its registry value name is shared with real installs; it was checked by
+hand with a fixture AppId (value written, removed on uninstall). The version transition uses identical-source binaries; it does
 not test migration from historical database schemas. This coverage does not
 establish physical keyboard/mouse focus behavior, real-app capture, private
 browsing, notification delivery or every Windows configuration.
@@ -94,9 +137,10 @@ SHA-256 and runs the recovered CLI/GUI checks again. `binary_source_commit` reco
 the original compiler commit separately from the current packaging `commit`.
 Runtime source changes require a fresh build.
 
-Windows may show an unknown-publisher or reputation warning for this unsigned
-preview. Compare its SHA-256 with the matching artifact provenance and follow
-your organization's policy. This workflow does not disable or bypass protection.
+The script embeds `packaging/windows/screensense.ico` (setup icon, shortcuts) and
+defaults to version `0.2.0` / `0.2.0.0`; pass `-Version` and `-VersionNumber` for
+another release. A normal build uses the production AppId; test installs must
+use a fixture AppId (see below).
 
 The repeatable fixture test is `scripts/verify-windows-installer.ps1`. It requires
 fixture-only installers and matching `.build.json` files, refuses an existing
