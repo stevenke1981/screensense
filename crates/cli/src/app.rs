@@ -31,7 +31,10 @@ impl App {
         let loaded = Config::load(&paths::config_path());
         let store = Store::open(&data_dir)
             .with_context(|| format!("cannot open the database in {}", data_dir.display()))?;
-        let privacy = Privacy::new(&loaded.config.privacy, &loaded.config.apps);
+        let mut privacy = Privacy::new(&loaded.config.privacy, &loaded.config.apps);
+        if loaded.error.is_some() {
+            privacy.block();
+        }
         let lang = Lang::resolve(&loaded.config.language);
         Ok(App {
             data_dir,
@@ -44,6 +47,13 @@ impl App {
 
     pub fn cfg(&self) -> &Config {
         &self.loaded.config
+    }
+
+    pub fn require_usable_config(&self) -> anyhow::Result<()> {
+        if !self.loaded.usable() {
+            anyhow::bail!("configuration or privacy rules are not usable; recording and history output are blocked (screensense config check)");
+        }
+        Ok(())
     }
 
     /// A rendering context stamped with the current time.
@@ -64,7 +74,7 @@ impl App {
         let mut out = Vec::new();
         if let Some(e) = &self.loaded.error {
             out.push(format!(
-                "config file {} is not usable, defaults are in effect: {e}",
+                "config file {} is not usable; recording and history output are blocked: {e}",
                 self.loaded.path.display()
             ));
         }
@@ -72,7 +82,7 @@ impl App {
             self.privacy
                 .warnings()
                 .iter()
-                .map(|w| format!("privacy rule skipped: {w}")),
+                .map(|w| format!("privacy rule rejected: {w}")),
         );
         out
     }

@@ -799,6 +799,7 @@ fn image_line(ctx: &Ctx, after: Option<Ts>) -> Option<String> {
     }
     if ctx.privacy.classify(&f.app, &f.title, Some(false)).tier != Tier::Full
         || ctx.privacy.check_text(&f.text).is_some()
+        || !ctx.privacy.redact(&f.text).spans.is_empty()
     {
         return None;
     }
@@ -1546,16 +1547,16 @@ pub fn status(ctx: &Ctx) -> String {
             ),
         ));
     }
+    if let Some(until) = active_pause(ctx, hb.as_ref()) {
+        body.push(paused_line(ctx, until));
+    } else if alive {
+        body.push(
+            hb.as_ref()
+                .and_then(|h| idle_line(ctx, h))
+                .unwrap_or_else(|| ctx.t("Recording: active.", "錄製：進行中。").to_string()),
+        );
+    }
     if alive {
-        let pause = active_pause(ctx, hb.as_ref());
-        let state = if let Some(until) = pause {
-            paused_line(ctx, until)
-        } else if let Some(idle) = hb.as_ref().and_then(|h| idle_line(ctx, h)) {
-            idle
-        } else {
-            ctx.t("Recording: active.", "錄製：進行中。").to_string()
-        };
-        body.push(state);
         if let Some(n) = hb.as_ref().and_then(|h| now_info(ctx, h)) {
             body.push(now_line(ctx, &n));
         }
@@ -2527,6 +2528,27 @@ mod tests {
             "a heartbeat from the future is not a live one"
         );
         assert!(!daemon_alive(Some(&hb(f64::NAN)), NOW));
+    }
+
+    #[test]
+    fn image_path_is_hidden_when_current_soft_rules_would_change_pixels() {
+        let mut e = Env::on_disk();
+        e.cfg.digest.include_image_path = true;
+        e.frame(
+            NOW,
+            "code",
+            "fixture",
+            "fixture-client-name",
+            Some("images/old.jpg"),
+        );
+        assert!(image_line(&e.ctx(), None).is_some());
+        e.cfg.privacy.redact.push(RedactRule {
+            pattern: "fixture-client-name".into(),
+            replace: "[client]".into(),
+            hard: false,
+        });
+        e.privacy = Privacy::new(&e.cfg.privacy, &e.cfg.apps);
+        assert!(image_line(&e.ctx(), None).is_none());
     }
 
     #[test]

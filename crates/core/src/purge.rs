@@ -38,6 +38,12 @@ pub struct PurgeStats {
 ///
 /// Running it twice in a row changes nothing the second time.
 pub fn purge(store: &Store, privacy: &Privacy) -> crate::Result<PurgeStats> {
+    if !privacy.is_usable() {
+        return Err(crate::Error::other(
+            "privacy rules are not usable; no purge performed",
+        ));
+    }
+    store.invalidate_privacy()?;
     let mut st = PurgeStats::default();
 
     let mut after = 0i64;
@@ -93,6 +99,9 @@ pub fn purge(store: &Store, privacy: &Privacy) -> crate::Result<PurgeStats> {
             }
         }
     }
+    store.retry_image_deletions()?;
+    store.scrub_deleted()?;
+    store.meta_set(HASH_KEY, &privacy.rules_hash())?;
     Ok(st)
 }
 
@@ -107,14 +116,20 @@ fn purge_span(
         Tier::Hidden => {
             if s.tier != Tier::Hidden || !s.title.is_empty() {
                 store.span_set_privacy(s.id, "", Tier::Hidden)?;
+                let (frames, errors) = store.window_record_counts(&s.app, &s.title)?;
                 store.forget_window(&s.app, &s.title)?;
+                st.frames_deleted += frames;
+                st.errors_deleted += errors;
                 st.spans_hidden += 1;
             }
         }
         Tier::TitleOnly if s.tier == Tier::Full => {
             let cleaned = privacy.clean_title(&s.title);
             store.span_set_privacy(s.id, &cleaned, Tier::TitleOnly)?;
+            let (frames, errors) = store.window_record_counts(&s.app, &s.title)?;
             store.forget_window(&s.app, &s.title)?;
+            st.frames_deleted += frames;
+            st.errors_deleted += errors;
             if cleaned != s.title {
                 store.forget_window(&s.app, &cleaned)?;
             }
@@ -155,6 +170,11 @@ fn error_must_go(privacy: &Privacy, e: &ErrorRec) -> bool {
         }
     }
     false
+}
+
+/// Read-only comparison for interfaces that must ask before deleting history.
+pub fn rules_changed(store: &Store, privacy: &Privacy) -> crate::Result<bool> {
+    Ok(store.meta_get(HASH_KEY)?.as_deref() != Some(privacy.rules_hash().as_str()))
 }
 
 /// Run purge() only when privacy.rules_hash() differs from meta "config.rules_hash"; store the new hash
@@ -204,6 +224,7 @@ fn mark_key(app: &str, title: &str) -> String {
 /// from then on, across restarts. Stored in meta under "config.sensitive.<16-hex FNV-1a of app \0 title>" = ts.
 /// (The "config." prefix makes the mark survive `Store::wipe`.) Keys hold a hash, never the title itself.
 pub fn mark_sensitive(store: &Store, app: &str, title: &str, now: Ts) -> crate::Result<()> {
+    store.invalidate_privacy()?;
     store.meta_set(&mark_key(app, title), &now.to_string())
 }
 
@@ -365,9 +386,10 @@ mod tests {
         assert_eq!(st.spans_downgraded, 0);
         // The bank window's frame and error are gone, from the FTS index too.
         assert_eq!(
-            st.frames_deleted, 0,
-            "forget_window already removed it: {st:?}"
+            st.frames_deleted, 1,
+            "include frames removed by forget_window: {st:?}"
         );
+        assert_eq!(st.errors_deleted, 1);
         assert!(store
             .frames_search("transfers", 0.0, 10)
             .unwrap()

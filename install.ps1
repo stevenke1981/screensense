@@ -1,8 +1,8 @@
 # ScreenSense installer for Windows 10/11 (x64).
 #
-# NOTE: no release exists until the first version tag is pushed to the
-# repository. Until then this script fails at the download step; build from
-# source instead (see README.md).
+# Downloads the latest published release for this supported target. If no
+# compatible release is published yet, use the source-build instructions in
+# README.md.
 #
 # What it does:
 #   1. downloads the latest release archive and SHA256SUMS from GitHub;

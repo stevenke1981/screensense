@@ -360,7 +360,6 @@ fn norm_rel(s: &str) -> String {
 
 struct FileInfo {
     path: PathBuf,
-    len: u64,
     mtime: Option<f64>,
 }
 
@@ -381,7 +380,6 @@ fn walk_files(dir: &Path, depth: u32, out: &mut Vec<FileInfo>) {
                 .map(|d| d.as_secs_f64());
             out.push(FileInfo {
                 path: entry.path(),
-                len: md.len(),
                 mtime,
             });
         }
@@ -507,7 +505,13 @@ impl Store {
             }
             conn.pragma_update_and_check(None, "journal_mode", "WAL", |r| r.get::<_, String>(0))?;
             conn.pragma_update(None, "synchronous", "NORMAL")?;
-            migrate(&conn)
+            conn.pragma_update(None, "secure_delete", "ON")?;
+            migrate(&conn)?;
+            conn.execute(
+                "INSERT INTO frames_fts(frames_fts, rank) VALUES('secure-delete', 1)",
+                [],
+            )?;
+            Ok(())
         })?;
         Ok(Store {
             conn,
@@ -520,6 +524,11 @@ impl Store {
         let conn = Connection::open_in_memory()?;
         conn.busy_timeout(BUSY_TIMEOUT)?;
         migrate(&conn)?;
+        conn.pragma_update(None, "secure_delete", "ON")?;
+        conn.execute(
+            "INSERT INTO frames_fts(frames_fts, rank) VALUES('secure-delete', 1)",
+            [],
+        )?;
         Ok(Store {
             conn,
             data_dir: None,
@@ -559,20 +568,98 @@ impl Store {
     }
 
     /// Delete an image file named by a stored relative path. Refuses anything that
-    /// could leave the data dir; a missing file is fine. Best effort: returns the
-    /// bytes freed (0 when nothing was removed). A leftover file is picked up by
-    /// the orphan scan of the next sweep.
-    fn remove_image(&self, rel: &str) -> u64 {
-        let Some(dir) = &self.data_dir else { return 0 };
+    /// could leave the data dir; a missing file is fine. Failed removal is reported
+    /// without revealing the stored path; purge retries unreferenced images.
+    fn remove_image(&self, rel: &str) -> crate::Result<u64> {
+        let Some(dir) = &self.data_dir else {
+            return Ok(0);
+        };
         if !is_safe_rel(rel) {
-            return 0;
+            return Err(crate::Error::other(
+                "unsafe stored image path; image was not deleted",
+            ));
         }
         let path = dir.join(rel);
         let size = fs::symlink_metadata(&path).map(|m| m.len()).unwrap_or(0);
         match fs::remove_file(&path) {
-            Ok(()) => size,
-            Err(_) => 0,
+            Ok(()) => Ok(size),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
+            Err(e) => Err(crate::Error::other(format!(
+                "stored image could not be deleted ({}); image may remain on disk",
+                e.kind()
+            ))),
         }
+    }
+
+    /// Cross-process generation for privacy changes, pause, stop and purge.
+    pub fn privacy_revision(&self) -> crate::Result<u64> {
+        Ok(self
+            .meta_get("control.privacy_revision")?
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0))
+    }
+
+    fn bump_privacy_revision(&self) -> crate::Result<()> {
+        self.conn.execute("INSERT INTO meta(key, value) VALUES('control.privacy_revision', '1') ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1", [])?;
+        Ok(())
+    }
+
+    pub fn invalidate_privacy(&self) -> crate::Result<()> {
+        let tx = self.immediate()?;
+        self.bump_privacy_revision()?;
+        self.conn.execute("DELETE FROM insights", [])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Fence in-flight work while replacing configuration, without deleting history.
+    /// The closure must not open another transaction. If it fails, the generation
+    /// change rolls back; existing insights and recording controls remain intact.
+    pub fn privacy_fenced<T>(
+        &self,
+        replace: impl FnOnce() -> crate::Result<T>,
+    ) -> crate::Result<T> {
+        let tx = self.immediate()?;
+        self.bump_privacy_revision()?;
+        let value = replace()?;
+        tx.commit()?;
+        Ok(value)
+    }
+
+    fn recording_allowed(&self, revision: u64, now: Ts) -> crate::Result<bool> {
+        let control = self.control()?;
+        Ok(self.privacy_revision()? == revision
+            && !control.stop
+            && !control.paused_until.is_some_and(|t| t > now))
+    }
+
+    /// Serialize a final write with pause/purge. The closure must not open another transaction.
+    pub fn recording_write<T>(
+        &self,
+        revision: u64,
+        now: Ts,
+        write: impl FnOnce() -> crate::Result<T>,
+    ) -> crate::Result<Option<T>> {
+        let tx = self.immediate()?;
+        if !self.recording_allowed(revision, now)? {
+            return Ok(None);
+        }
+        let value = write()?;
+        tx.commit()?;
+        Ok(Some(value))
+    }
+
+    /// Scrub FTS shadow pages and truncate the WAL after a successful privacy deletion.
+    pub fn scrub_deleted(&self) -> crate::Result<()> {
+        self.conn
+            .execute("INSERT INTO frames_fts(frames_fts) VALUES('optimize')", [])?;
+        let busy: i64 = self
+            .conn
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))?;
+        if busy != 0 {
+            return Err(crate::Error::other("privacy rows deleted; database checkpoint is busy, retry purge after closing readers"));
+        }
+        Ok(())
     }
 
     // ---- meta (key/value) ----
@@ -620,18 +707,43 @@ impl Store {
     }
 
     pub fn set_stop(&self, stop: bool) -> crate::Result<()> {
+        let tx = self.immediate()?;
         if stop {
-            self.meta_set("control.stop", "1")
+            self.bump_privacy_revision()?;
+            self.meta_set("control.stop", "1")?;
         } else {
-            self.meta_delete("control.stop")
+            self.meta_delete("control.stop")?;
         }
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn set_paused_until(&self, until: Option<Ts>) -> crate::Result<()> {
+        let tx = self.immediate()?;
+        self.bump_privacy_revision()?;
         match until {
-            Some(t) => self.meta_set("control.paused_until", &t.to_string()),
-            None => self.meta_delete("control.paused_until"),
+            Some(t) => self.meta_set("control.paused_until", &t.to_string())?,
+            None => self.meta_delete("control.paused_until")?,
         }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Agent requests may only extend a pause. Read and update under the same
+    /// write transaction so another connection's longer deadline is preserved.
+    pub fn extend_paused_until(&self, requested: Ts) -> crate::Result<Ts> {
+        if !requested.is_finite() {
+            return Err(crate::Error::other("pause deadline must be finite"));
+        }
+        let tx = self.immediate()?;
+        let existing = self.control()?.paused_until;
+        let until = existing.map_or(requested, |t| t.max(requested));
+        if existing != Some(until) {
+            self.bump_privacy_revision()?;
+            self.meta_set("control.paused_until", &until.to_string())?;
+        }
+        tx.commit()?;
+        Ok(until)
     }
 
     // ---- spans (foreground-window timeline) ----
@@ -649,6 +761,14 @@ impl Store {
         self.conn
             .prepare_cached(r#"UPDATE spans SET "end" = MAX("end", ?2) WHERE id = ?1"#)?
             .execute(params![id, end])?;
+        Ok(())
+    }
+
+    pub fn span_set_end(&self, id: i64, end: Ts) -> crate::Result<()> {
+        self.conn.execute(
+            "UPDATE spans SET \"end\" = MAX(start, ?2) WHERE id = ?1",
+            params![id, end],
+        )?;
         Ok(())
     }
 
@@ -787,36 +907,33 @@ impl Store {
 
     /// Delete one frame, its FTS row and its image file (if any, and if a data dir exists).
     pub fn frame_delete(&self, id: i64) -> crate::Result<()> {
-        let image = {
-            let tx = self.immediate()?;
-            let image: Option<String> = tx
-                .query_row("SELECT image FROM frames WHERE id = ?1", [id], |r| r.get(0))
-                .optional()?
-                .flatten();
-            tx.execute("DELETE FROM frames WHERE id = ?1", [id])?;
-            tx.commit()?;
-            image
-        };
+        let tx = self.immediate()?;
+        let image: Option<String> = tx
+            .query_row("SELECT image FROM frames WHERE id = ?1", [id], |r| r.get(0))
+            .optional()?
+            .flatten();
+        tx.execute("DELETE FROM frames WHERE id = ?1", [id])?;
+        tx.commit()?;
         if let Some(rel) = image {
-            self.remove_image(&rel);
+            if let Err(e) = self.remove_image(&rel) {
+                self.scrub_deleted()?;
+                return Err(e);
+            }
         }
         Ok(())
     }
 
-    /// Forget the image of a frame (delete the file, set image = NULL), keep the text.
+    /// Clear the image reference even when file removal fails; purge retries orphans.
     pub fn frame_drop_image(&self, id: i64) -> crate::Result<()> {
-        let image = {
-            let tx = self.immediate()?;
-            let image: Option<String> = tx
-                .query_row("SELECT image FROM frames WHERE id = ?1", [id], |r| r.get(0))
-                .optional()?
-                .flatten();
-            tx.execute("UPDATE frames SET image = NULL WHERE id = ?1", [id])?;
-            tx.commit()?;
-            image
-        };
+        let tx = self.immediate()?;
+        let image: Option<String> = tx
+            .query_row("SELECT image FROM frames WHERE id = ?1", [id], |r| r.get(0))
+            .optional()?
+            .flatten();
+        tx.execute("UPDATE frames SET image = NULL WHERE id = ?1", [id])?;
+        tx.commit()?;
         if let Some(rel) = image {
-            self.remove_image(&rel);
+            self.remove_image(&rel)?;
         }
         Ok(())
     }
@@ -835,9 +952,37 @@ impl Store {
         dedupe_s: f64,
         repeat_window_s: f64,
     ) -> crate::Result<ErrorUpsert> {
+        self.error_upsert_inner(e, dedupe_s, repeat_window_s, None)
+    }
+
+    pub fn error_upsert_guarded(
+        &self,
+        e: &NewError,
+        dedupe_s: f64,
+        repeat_window_s: f64,
+        revision: u64,
+        now: Ts,
+    ) -> crate::Result<ErrorUpsert> {
+        self.error_upsert_inner(e, dedupe_s, repeat_window_s, Some((revision, now)))
+    }
+
+    fn error_upsert_inner(
+        &self,
+        e: &NewError,
+        dedupe_s: f64,
+        repeat_window_s: f64,
+        guard: Option<(u64, Ts)>,
+    ) -> crate::Result<ErrorUpsert> {
         let lines = serde_json::to_string(&e.lines)?;
         let score = i64::from(e.score);
         let tx = self.immediate()?;
+        if let Some((revision, now)) = guard {
+            if !self.recording_allowed(revision, now)? {
+                return Err(crate::Error::other(
+                    "recording stopped or privacy rules changed",
+                ));
+            }
+        }
         let existing: Option<(i64, f64, i64, i64)> = tx
             .prepare_cached(
                 "SELECT id, last_ts, count, score FROM errors \
@@ -1113,30 +1258,44 @@ impl Store {
     /// Delete every frame and error (and frame images) for this exact app + title.
     /// Returns the number of rows (frames + errors) removed.
     pub fn forget_window(&self, app: &str, title: &str) -> crate::Result<u64> {
-        let (images, removed) = {
-            let tx = self.immediate()?;
-            let images: Vec<String> = {
-                let mut st = tx.prepare_cached(
-                    "SELECT image FROM frames WHERE app = ?1 AND title = ?2 AND image IS NOT NULL",
-                )?;
-                let rows = st.query_map(params![app, title], |r| r.get::<_, String>(0))?;
-                rows.collect::<rusqlite::Result<Vec<_>>>()?
-            };
-            let frames = tx.execute(
-                "DELETE FROM frames WHERE app = ?1 AND title = ?2",
-                params![app, title],
+        let tx = self.immediate()?;
+        let images: Vec<String> = {
+            let mut st = tx.prepare_cached(
+                "SELECT image FROM frames WHERE app = ?1 AND title = ?2 AND image IS NOT NULL",
             )?;
-            let errors = tx.execute(
-                "DELETE FROM errors WHERE app = ?1 AND title = ?2",
-                params![app, title],
-            )?;
-            tx.commit()?;
-            (images, (frames + errors) as u64)
+            let rows = st.query_map(params![app, title], |r| r.get::<_, String>(0))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
         };
+        let frames = tx.execute(
+            "DELETE FROM frames WHERE app = ?1 AND title = ?2",
+            params![app, title],
+        )?;
+        let errors = tx.execute(
+            "DELETE FROM errors WHERE app = ?1 AND title = ?2",
+            params![app, title],
+        )?;
+        tx.commit()?;
         for rel in &images {
-            self.remove_image(rel);
+            if let Err(e) = self.remove_image(rel) {
+                self.scrub_deleted()?;
+                return Err(e);
+            }
         }
-        Ok(removed)
+        Ok((frames + errors) as u64)
+    }
+
+    pub fn window_record_counts(&self, app: &str, title: &str) -> crate::Result<(u64, u64)> {
+        let frames: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM frames WHERE app = ?1 AND title = ?2",
+            params![app, title],
+            |r| r.get(0),
+        )?;
+        let errors: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM errors WHERE app = ?1 AND title = ?2",
+            params![app, title],
+            |r| r.get(0),
+        )?;
+        Ok((frames as u64, errors as u64))
     }
 
     // ---- retention ----
@@ -1239,15 +1398,14 @@ impl Store {
                 "DELETE FROM sessions WHERE last_ts < ?1",
                 [now - SESSION_MAX_IDLE_S],
             )?;
+            // Remove files before commit, retaining references on any deletion failure.
+            for rel in &doomed {
+                st.image_bytes_freed += self.remove_image(rel)?;
+            }
             tx.commit()?;
         }
-
-        // Files go only after the rows are gone for good.
-        for rel in &doomed {
-            st.image_bytes_freed += self.remove_image(rel);
-        }
         st.images_deleted += doomed.len() as u64;
-        self.remove_orphans(now, &mut st)?;
+        self.remove_orphans(now, &mut st, false)?;
         self.remove_empty_day_dirs();
 
         // Housekeeping is best effort: a busy checkpoint must not fail the sweep.
@@ -1258,9 +1416,19 @@ impl Store {
         Ok(st)
     }
 
+    /// Retry image removal after committed privacy deletion. The write lock prevents
+    /// deleting a freshly written capture before its frame reference commits.
+    pub fn retry_image_deletions(&self) -> crate::Result<()> {
+        let tx = self.immediate()?;
+        let mut stats = SweepStats::default();
+        self.remove_orphans(crate::now(), &mut stats, true)?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Delete files under `<data>/images` that no frame references and that are
     /// older than 10 minutes.
-    fn remove_orphans(&self, now: Ts, st: &mut SweepStats) -> crate::Result<()> {
+    fn remove_orphans(&self, now: Ts, st: &mut SweepStats, force: bool) -> crate::Result<()> {
         let Some(dir) = &self.data_dir else {
             return Ok(());
         };
@@ -1283,7 +1451,7 @@ impl Store {
         };
         for f in files {
             let Some(mtime) = f.mtime else { continue };
-            if now - mtime < ORPHAN_MIN_AGE_S {
+            if !force && now - mtime < ORPHAN_MIN_AGE_S {
                 continue;
             }
             let Ok(rel) = f.path.strip_prefix(dir) else {
@@ -1297,10 +1465,8 @@ impl Store {
             if referenced.contains(&rel) {
                 continue;
             }
-            if fs::remove_file(&f.path).is_ok() {
-                st.images_deleted += 1;
-                st.image_bytes_freed += f.len;
-            }
+            st.image_bytes_freed += self.remove_image(&rel)?;
+            st.images_deleted += 1;
         }
         Ok(())
     }
@@ -1326,38 +1492,183 @@ impl Store {
         }
     }
 
-    /// Delete ALL recorded data (every table except meta keys starting with "config."), all images.
+    /// Aggregate history counts for the desktop overview; no content is returned.
+    pub fn history_counts(&self) -> crate::Result<[u64; 5]> {
+        let mut counts = [0; 5];
+        for (i, table) in ["spans", "frames", "errors", "commands", "insights"]
+            .iter()
+            .enumerate()
+        {
+            let n: i64 =
+                self.conn
+                    .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))?;
+            counts[i] = n.max(0) as u64;
+        }
+        Ok(counts)
+    }
+
+    /// Delete recorded history and images; preserve configuration, sensitive marks and privacy controls.
     /// For `screensense purge --all`.
     pub fn wipe(&self) -> crate::Result<()> {
-        {
-            let tx = self.immediate()?;
-            for table in [
-                "spans", "frames", "errors", "commands", "insights", "sessions",
-            ] {
-                tx.execute(&format!("DELETE FROM {table}"), [])?;
+        let tx = self.immediate()?;
+        for table in [
+            "spans", "frames", "errors", "commands", "insights", "sessions",
+        ] {
+            tx.execute(&format!("DELETE FROM {table}"), [])?;
+        }
+        self.bump_privacy_revision()?;
+        tx.execute("DELETE FROM meta WHERE substr(key, 1, 7) <> 'config.' AND substr(key, 1, 8) <> 'control.'", [])?;
+        let files = (|| -> crate::Result<()> {
+            if let Some(dir) = &self.data_dir {
+                let images = crate::paths::images_dir(dir);
+                match fs::remove_dir_all(&images) {
+                    Ok(()) => {},
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+                    Err(e) => return Err(crate::Error::other(format!("history rows deleted but images could not be removed ({}); retry purge --all", e.kind()))),
+                }
+                fs::create_dir_all(&images)?;
             }
-            tx.execute("DELETE FROM meta WHERE substr(key, 1, 7) <> 'config.'", [])?;
-            tx.commit()?;
-        }
-        if let Some(dir) = &self.data_dir {
-            let images = crate::paths::images_dir(dir);
-            let _ = fs::remove_dir_all(&images);
-            let _ = fs::create_dir_all(&images);
-        }
-        // Squeeze the deleted content out of the file too (best effort).
-        let _ = self
-            .conn
-            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
-        let _ = self.conn.execute_batch("VACUUM");
-        let _ = self
-            .conn
-            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
+            Ok(())
+        })();
+        // Keep row erasure and cancellation even if locked files need a later retry.
+        tx.commit()?;
+        self.scrub_deleted()?;
+        files?;
+        self.conn.execute_batch("VACUUM")?;
+        self.scrub_deleted()?;
         Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn gui_configuration_fence_retains_insights_and_rolls_back_failed_replace() {
+        let s = Store::open_in_memory().unwrap();
+        s.insight_insert(&Insight {
+            ts: 1.0,
+            doing: "Synthetic retained analysis".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        let revision = s.privacy_revision().unwrap();
+        let before = s.history_counts().unwrap();
+        let failed: crate::Result<()> = s.privacy_fenced(|| {
+            Err(crate::Error::other(
+                "synthetic configuration replacement failure",
+            ))
+        });
+        assert!(failed.is_err());
+        assert_eq!(s.privacy_revision().unwrap(), revision);
+        assert_eq!(s.history_counts().unwrap(), before);
+        s.privacy_fenced(|| Ok(())).unwrap();
+        assert!(s.privacy_revision().unwrap() > revision);
+        assert_eq!(s.history_counts().unwrap(), before);
+        assert!(s
+            .recording_write(revision, 2.0, || Ok(()))
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn release_regression_wipe_preserves_privacy_control() {
+        let s = Store::open_in_memory().unwrap();
+        s.set_paused_until(Some(1_900_000_000.0)).unwrap();
+        s.set_stop(true).unwrap();
+        s.wipe().unwrap();
+        assert_eq!(s.control().unwrap().paused_until, Some(1_900_000_000.0));
+        assert!(s.control().unwrap().stop);
+    }
+
+    #[test]
+    fn release_regression_image_removal_failure_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(dir.path()).unwrap();
+        std::fs::create_dir_all(dir.path().join("images/a.jpg/blocked")).unwrap();
+        let id = s
+            .frame_insert(&frame_with_image(1.0, "a", "t", "images/a.jpg"))
+            .unwrap();
+        assert!(s.frame_delete(id).is_err());
+        assert!(
+            s.frame_get(id).unwrap().is_none(),
+            "failed file removal does not retain history"
+        );
+        fs::remove_dir(dir.path().join("images/a.jpg/blocked")).unwrap();
+        fs::remove_dir(dir.path().join("images/a.jpg")).unwrap();
+        fs::write(dir.path().join("images/a.jpg"), b"synthetic image").unwrap();
+        s.retry_image_deletions().unwrap();
+        assert!(s.frame_get(id).unwrap().is_none());
+        assert!(!dir.path().join("images/a.jpg").exists());
+    }
+
+    #[test]
+    fn release_regression_failed_image_delete_never_retains_sensitive_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(dir.path()).unwrap();
+        fs::create_dir_all(dir.path().join("images/a.jpg/blocked")).unwrap();
+        let id = s
+            .frame_insert(&frame_with_image(1.0, "wezterm", "fixture", "images/a.jpg"))
+            .unwrap();
+        assert!(s.forget_window("wezterm", "fixture").is_err());
+        assert!(
+            s.frame_get(id).unwrap().is_none(),
+            "file errors must not restore deleted history"
+        );
+        assert!(s.frames_search("some text", 0.0, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn release_regression_privacy_delete_scrubs_database_and_fts_pages() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(dir.path()).unwrap();
+        let marker = "SYNTHETIC_ERASURE_7e6afc29_".repeat(80);
+        let id = s
+            .frame_insert(&nf(1.0, "wezterm", "fixture", &marker))
+            .unwrap();
+        assert_eq!(
+            s.frames_search("SYNTHETIC_ERASURE", 0.0, 10).unwrap().len(),
+            1
+        );
+        s.frame_delete(id).unwrap();
+        s.scrub_deleted().unwrap();
+        assert!(s
+            .frames_search("SYNTHETIC_ERASURE", 0.0, 10)
+            .unwrap()
+            .is_empty());
+        for name in ["screensense.db", "screensense.db-wal"] {
+            if let Ok(bytes) = fs::read(dir.path().join(name)) {
+                assert!(
+                    !bytes
+                        .windows(b"SYNTHETIC_ERASURE_7e6afc29".len())
+                        .any(|w| w == b"SYNTHETIC_ERASURE_7e6afc29"),
+                    "{name}: erased fixture bytes remain"
+                );
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn release_regression_wipe_reports_locked_image_and_can_retry() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(dir.path()).unwrap();
+        write_file(dir.path(), "images/d/locked.jpg", 20);
+        let handle = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(dir.path().join("images/d/locked.jpg"))
+            .unwrap();
+        s.set_paused_until(Some(1_900_000_000.0)).unwrap();
+        let err = s.wipe().unwrap_err().to_string();
+        assert!(err.contains("images could not be removed"), "{err}");
+        assert!(!err.contains("locked.jpg"));
+        assert!(dir.path().join("images/d/locked.jpg").exists());
+        assert_eq!(s.control().unwrap().paused_until, Some(1_900_000_000.0));
+        drop(handle);
+        s.wipe().unwrap();
+        assert!(!dir.path().join("images/d/locked.jpg").exists());
+    }
     use super::*;
     use std::time::SystemTime;
 
@@ -1596,6 +1907,34 @@ mod tests {
     }
 
     // ---- spans ----
+
+    #[test]
+    fn agent_pause_preserves_longest_deadline_across_connections() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        store.set_paused_until(Some(3600.0)).unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
+        let workers: Vec<_> = [60.0, 5400.0, 7200.0]
+            .into_iter()
+            .map(|requested| {
+                let path = dir.path().to_path_buf();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let store = Store::open(&path).unwrap();
+                    barrier.wait();
+                    store.extend_paused_until(requested).unwrap()
+                })
+            })
+            .collect();
+        barrier.wait();
+        for worker in workers {
+            assert!(worker.join().unwrap() >= 3600.0);
+        }
+        assert_eq!(store.control().unwrap().paused_until, Some(7200.0));
+        // The user still has an explicit resume operation.
+        store.set_paused_until(None).unwrap();
+        assert_eq!(store.control().unwrap().paused_until, None);
+    }
 
     #[test]
     fn span_open_touch_between() {
@@ -2337,22 +2676,22 @@ mod tests {
         let f3 = s
             .frame_insert(&frame_with_image(3.0, "x", "y", "images/../../outside.txt"))
             .unwrap();
-        s.frame_delete(f1).unwrap();
-        s.frame_drop_image(f2).unwrap();
+        assert!(s.frame_delete(f1).is_err());
+        assert!(s.frame_drop_image(f2).is_err());
         assert!(outside.exists());
         s.frame_delete(f2).unwrap();
-        s.frame_delete(f3).unwrap();
+        assert!(s.frame_delete(f3).is_err());
         // forget_window and sweep (age + frames) are guarded too
         s.frame_insert(&frame_with_image(4.0, "w", "t", "../outside.txt"))
             .unwrap();
         s.frame_insert(&frame_with_image(5.0, "w", "t", &abs))
             .unwrap();
-        s.forget_window("w", "t").unwrap();
+        assert!(s.forget_window("w", "t").is_err());
         s.frame_insert(&frame_with_image(6.0, "w", "t", "../outside.txt"))
             .unwrap();
         s.frame_insert(&frame_with_image(7.0, "w", "t", &abs))
             .unwrap();
-        s.sweep(1e9, &RetentionConfig::default()).unwrap();
+        assert!(s.sweep(1e9, &RetentionConfig::default()).is_err());
         assert!(outside.exists());
         assert_eq!(fs::read_to_string(&outside).unwrap(), "precious");
     }
@@ -2679,7 +3018,7 @@ mod tests {
     }
 
     #[test]
-    fn wipe_removes_everything_but_config_meta() {
+    fn wipe_removes_history_but_preserves_configuration_and_control() {
         let dir = tempfile::tempdir().unwrap();
         let s = Store::open(dir.path()).unwrap();
         write_file(dir.path(), "images/d/a.jpg", 5);
@@ -2722,7 +3061,7 @@ mod tests {
         );
         assert_eq!(s.meta_get("config.x").unwrap().as_deref(), Some("y"));
         assert_eq!(s.meta_get("heartbeat").unwrap(), None);
-        assert!(!s.control().unwrap().stop);
+        assert!(s.control().unwrap().stop);
         assert!(!dir.path().join("images/d").exists());
         // still usable afterwards
         let n = s.frame_insert(&nf(2.0, "a", "t", "fresh start")).unwrap();

@@ -109,6 +109,8 @@ fn yes_no(b: bool) -> &'static str {
 
 fn reason_text(r: TierReason) -> &'static str {
     match r {
+        TierReason::UnknownApp => "the foreground process could not be identified",
+        TierReason::InvalidRules => "configuration or privacy rules are not usable",
         TierReason::HiddenApp => "the app is on the hidden list",
         TierReason::HiddenTitle => "the title matches a hidden rule",
         TierReason::SelfWindow => "it is an AI tool's own window",
@@ -185,7 +187,7 @@ fn check_config(r: &mut Report, loaded: &Loaded, f: &mut Findings) {
         r.line(
             Mark::Bad,
             &format!(
-                "config file {path} is not usable, so the defaults are in effect: {}",
+                "config file {path} is not usable; recording and history output are blocked: {}",
                 clean(e, 300)
             ),
         );
@@ -218,7 +220,7 @@ fn check_privacy(r: &mut Report, cfg: &Config, privacy: &Privacy) {
         ),
     );
     for w in privacy.warnings() {
-        r.line(Mark::Warn, &format!("rule skipped: {}", clean(w, 300)));
+        r.line(Mark::Warn, &format!("rule rejected: {}", clean(w, 300)));
     }
 }
 
@@ -261,6 +263,13 @@ fn check_platform(
         r.line(Mark::Warn, &clean(n, 300));
     }
 
+    if !privacy.is_usable() {
+        r.line(
+            Mark::Warn,
+            "foreground check skipped: configuration or privacy rules are not usable",
+        );
+        return None;
+    }
     let seen = match platform.foreground() {
         None => {
             r.line(
@@ -480,7 +489,7 @@ fn verdict(f: &Findings, r: &Report) -> String {
     let what = if !f.db_ok {
         "the database cannot be opened, so nothing can be recorded or shown; fix that first"
     } else if f.config_broken {
-        "the config file is not usable, so your settings and privacy rules are NOT in effect; fix it (screensense config check)"
+        "the config file is not usable; recording and history output are blocked; fix it (screensense config check)"
     } else if !f.running {
         "the sensor is not running; start it with: screensense daemon start"
     } else if !f.can_see_windows {
@@ -511,7 +520,11 @@ pub fn run(capture: bool) -> i32 {
 
     let data_dir = paths::data_dir();
     let loaded = Config::load(&paths::config_path());
-    let privacy = Privacy::new(&loaded.config.privacy, &loaded.config.apps);
+    let mut privacy = Privacy::new(&loaded.config.privacy, &loaded.config.apps);
+    if loaded.error.is_some() {
+        privacy.block();
+    }
+    f.config_broken = !loaded.usable();
 
     r.section("Files", |r| {
         check_data_dir(r, &data_dir);

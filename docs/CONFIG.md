@@ -24,34 +24,14 @@ authority if the two ever disagree.
 
 ## When a change takes effect
 
-The running daemon checks the config file about every 10 seconds. When it has
-changed (or appeared, or been removed), the new settings and privacy rules
-apply without a restart, and stored history the new rules forbid is deleted
-(see [PRIVACY.md](PRIVACY.md)). One exception: the OCR engine is chosen when
-the daemon starts, so a change to `capture.ocr` or `capture.ocr_language`
-needs `screensense daemon restart`. `screensense hook` reads the file on every
-call; `screensense mcp` reads it once, when it starts. A file that no longer
-parses is reported, and the daemon keeps working with defaults (rule 2 below).
+The daemon checks config about every 2 seconds. Changes reload settings and privacy rules and trigger a retroactive purge when the rules change. Changing `capture.ocr` or `capture.ocr_language` requires `screensense daemon restart`, because the OCR engine is selected when the daemon starts. Each hook invocation and each MCP request reloads the config and applies current privacy rules before returning history. Invalid TOML or privacy regexes block recording and history output. Diagnostic commands may display defaults to explain the problem; that is not a fallback that continues recording. The `stream` command reloads about every second, fails closed on invalid config or purge failure, and does not replay events from a blocked interval after recovery.
 
 ## Rules that keep a bad config file safe
 
-1. **Privacy lists are additive.** Everything under `[privacy]` and `[apps]` is
-   added on top of the built-in rules. Nothing in the file can remove or switch
-   off a built-in rule.
-2. **A file that cannot be parsed is ignored as a whole.** Defaults apply, and
-   the error is shown by `screensense status`, `screensense doctor` and
-   `screensense config check`. It does not half-apply. Note what "defaults
-   apply" means for privacy: while the file is broken, your own additions
-   (hidden apps, regexes, keywords) are not in force either, only the built-in
-   rules are, and a running daemon keeps recording under them. Run
-   `screensense config check` after editing.
-3. **Unknown keys are rejected.** A typo such as `keep_imagez = true` is a parse
-   error (rule 2 then applies), so a misspelt privacy setting cannot pass
-   unnoticed.
-4. **Numbers are clamped** to the ranges given below. A value that is not a
-   finite number is replaced by the default first.
-5. A user regular expression that does not compile is skipped and reported; the
-   other rules still apply.
+1. **Privacy lists are additive.** Everything under `[privacy]` and `[apps]` adds to built-in rules. The config cannot disable a built-in rule.
+2. **Invalid TOML or privacy regexes fail closed.** Recording and history output are blocked until the file is fixed. Diagnostics can show defaults for context, but those values do not enable capture or history fallback. `screensense status`, `doctor` and `config check` report the error.
+3. **Unknown keys are rejected.** A typo such as `keep_imagez = true` is a config error.
+4. **Numbers are clamped** to the ranges given below. A non-finite value is replaced by the default where safe.
 
 A UTF-8 byte-order mark at the start of the file is tolerated (Notepad writes one).
 
@@ -117,7 +97,7 @@ Title, path and sensitive-text regexes are compiled case-insensitively.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `pattern` | regex | `""` | What to look for. Compiled exactly as written; start it with `(?i)` for case-insensitivity. An empty pattern is ignored with a warning. |
+| `pattern` | regex | `""` | What to look for. Compiled exactly as written; start it with `(?i)` for case-insensitivity. An empty or whitespace-only pattern is rejected and makes the privacy rules unusable. Recording and history output are blocked until you fix or remove the rule; `screensense config check` reports the problem. |
 | `replace` | string | `""` | Replacement text, e.g. `[client]`. Empty means `[redacted]`. |
 | `hard` | bool | `false` | `true`: seeing this on screen drops the whole frame instead of masking it. |
 

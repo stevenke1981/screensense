@@ -115,16 +115,7 @@ the sensor when the config file changed; the capture and housekeeping threads
 reload their copies when their epoch is older, and the capture thread refuses
 to store a frame whose look started under the old rules.
 
-**Hot reload.** About every 10 s the sensor compares the config file's
-modification time and size with the last ones it saw. On a change (or when the
-file appeared or went away) it reloads the file, rebuilds the privacy rules,
-resets the gate, bumps generation and epoch, and runs the retroactive purge
-if the rules hash changed. A file that no longer parses means built-in
-defaults, and a note for `status` and `doctor`. The OCR engine and the platform
-backend are not re-created: changing `capture.ocr` or `capture.ocr_language`
-needs `daemon restart`. The `hook` process reads the file on every call; a
-long-lived `mcp` process reads it once.
-
+**Hot reload.** About every 2 s the sensor compares the config file modification time and size with the last values. A change reloads settings, rebuilds privacy rules, bumps the generation and config epoch, and runs retroactive purge when the rules hash changes. Invalid TOML or privacy regexes fail closed: recording and history reads are blocked. Diagnostics may show defaults for explanation; they do not enable recording under those defaults. The OCR engine and platform backend are not recreated, so changing `capture.ocr` or `capture.ocr_language` needs `daemon restart`. Each hook call and each MCP request reloads the config; MCP also purges under the current rules before returning data.
 The daemon log (`daemon.log`, or stderr for `daemon run`) holds lifecycle
 events, counts, durations and error kinds. Window titles, screen text and
 commands are never logged. `daemon start` moves a log larger than 1 MiB to
@@ -166,9 +157,8 @@ What the capture thread does with a request (`Capturer::look`):
 10. insert the frame; find error lines in the redacted text; upsert the error;
     if the count went up and the analyzer is on, queue an analysis job.
 
-Raw pixels and unredacted text exist in memory only. The one exception is the
-Linux OCR engine, which hands the image to the `tesseract` program through a
-temporary PPM file (mode 0600, deleted right after OCR).
+Raw pixels and unredacted text exist only in memory. Linux OCR sends image bytes
+to `tesseract` on stdin; it does not create a raw PPM temporary file.
 
 ## Storage (`store`)
 
@@ -197,9 +187,8 @@ count last went up (a new row, or a re-appearance, see Errors). Delta digests
 select on `bump_ts`.
 
 Images live in `<data>/images/YYYY-MM-DD/HHMMSS_mmm.jpg`; `frames.image` is the
-path relative to `<data>`. Keys in `meta` that start with `config.` (the rules
-hash and the sensitive-window marks) survive `purge --all`; the heartbeat and
-control rows do not.
+path relative to `<data>`. `purge --all` preserves the stored rules hash,
+sensitive-window marks, and pause/stop control rows. It deletes history rows.
 
 Retention (`sweep`): images `images_hours` (6 h) and `max_images_mb` (oldest
 first); frame text `frames_days` (7 d); spans, commands and errors
@@ -235,14 +224,15 @@ windows) → title-only app/title → browser probe → `Full`.
   be told apart from another.
 * `capture.enabled = false` stops looks only. Windows are still tracked and
   shell commands are still recorded.
-* User rules are additive. A regex that fails to compile is reported and skipped.
+* User rules are additive. If a configured privacy regex fails to compile, privacy rules become unusable and recording/history output is blocked until the config is fixed.
 
 **Retroactive rules delete.** `Privacy::rules_hash()` is stored in `meta`
 (`config.rules_hash`). When the daemon starts with a different hash, when it
 reloads a changed config file, or on `screensense purge`, every stored span,
 frame, command and error is re-checked against the current rules; anything that
-would no longer be recorded is deleted, image files included. `purge` does not
-look at the sensitive-window marks. Reading is checked again as well: the
+would no longer be recorded is deleted, image files included. Derived analyzer
+insights are also cleared. `purge` does not look at the sensitive-window marks.
+Reading is checked again as well: the
 digest and the CLI views re-classify everything they show.
 
 ## Errors (`detect`)
@@ -315,20 +305,21 @@ Latest image: C:\Users\me\AppData\Local\screensense\images\2026-10-10\135803_114
 
 ## MCP server (`mcp`)
 
-`screensense mcp`: JSON-RPC 2.0 over stdio, newline-delimited, protocol
-`2025-06-18` (answers with the client's version when it is one it knows).
+`screensense mcp`: JSON-RPC 2.0 over stdio, newline-delimited, protocol `2025-06-18` (answers with the client version when it is one it knows).
 
-| Tool | Returns |
+| Tool | What it returns |
 |---|---|
 | `screen_now` | the full digest |
-| `screen_timeline {minutes}` | window timeline |
-| `screen_errors {minutes, limit}` | recent errors with their lines |
-| `screen_search {query, minutes, limit}` | frames whose text matches, with snippets |
-| `screen_text {frame_id?, max_chars}` | redacted text of one frame (latest by default) |
+| `screen_timeline {minutes, limit}` | window spans, oldest first |
+| `screen_errors {minutes, limit}` | recent errors and their lines |
+| `screen_search {query, minutes, limit}` | matching frames with snippets |
+| `screen_text {frame_id?, max_chars}` | redacted text of one frame |
 | `screen_commands {minutes, limit}` | shell commands with exit codes |
-| `screen_pause {minutes}` / `screen_resume` | stop/resume recording |
+| `screen_pause {minutes}` | request or extend a pause |
 
-Every result that contains screen-derived text is fenced like the digest.
+There are seven tools and no `screen_resume`. MCP cannot end a pause early; only the user can run the CLI `screensense resume`. Each request reloads config and purges under current rules before returning data. Invalid TOML, invalid privacy regexes, or purge failures block history output. A pause request extends the existing deadline only when it is longer; shorter requests retain the current deadline.
+
+Every result that contains screen-derived text is fenced like the digest. Previous model insight text is also untrusted and stays inside the fence.
 
 ## Integrations (`integrations`, `shell`)
 

@@ -181,7 +181,7 @@ fn create_run_key() -> io::Result<RegKey> {
     Ok(RegKey(key))
 }
 
-/// The command line stored in the Run key: `"<exe>" daemon run`.
+/// The command line stored in the Run key: `"<exe>" daemon start`.
 ///
 /// A `\\?\` verbatim prefix (what `canonicalize` produces) is stripped: the
 /// shell's Run-key launcher does not reliably understand it. Windows paths
@@ -195,10 +195,10 @@ fn autostart_command(exe: &Path) -> String {
     } else {
         raw.into_owned()
     };
-    format!("\"{path}\" daemon run")
+    format!("\"{path}\" daemon start")
 }
 
-/// Register `"<exe>" daemon run` to start at sign-in.
+/// Register `"<exe>" daemon start` to start at sign-in.
 pub fn autostart_enable(exe: &Path) -> io::Result<()> {
     let command = autostart_command(exe);
     if command.contains('\0') {
@@ -299,7 +299,7 @@ mod tests {
         let cmd = autostart_command(Path::new(r"C:\Program Files\ScreenSense\screensense.exe"));
         assert_eq!(
             cmd,
-            r#""C:\Program Files\ScreenSense\screensense.exe" daemon run"#
+            r#""C:\Program Files\ScreenSense\screensense.exe" daemon start"#
         );
     }
 
@@ -307,11 +307,11 @@ mod tests {
     fn command_strips_the_verbatim_prefix() {
         assert_eq!(
             autostart_command(Path::new(r"\\?\C:\tools\screensense.exe")),
-            r#""C:\tools\screensense.exe" daemon run"#
+            r#""C:\tools\screensense.exe" daemon start"#
         );
         assert_eq!(
             autostart_command(Path::new(r"\\?\UNC\srv\share\screensense.exe")),
-            r#""\\srv\share\screensense.exe" daemon run"#
+            r#""\\srv\share\screensense.exe" daemon start"#
         );
     }
 

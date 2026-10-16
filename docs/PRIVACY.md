@@ -39,14 +39,7 @@ words, never window titles, screen text, command lines or prompt text;
 ScreenSense does not record keystrokes, the clipboard, audio, or windows that
 are not in the foreground.
 
-**One place outside the data directory (Linux only).** To run `tesseract`,
-the daemon writes the captured window, *before* redaction, as an uncompressed
-PPM file named `screensense-ocr-<pid>-<n>.ppm` in the system temporary
-directory (`TMPDIR`, usually `/tmp`), with mode `0600`, and deletes it as soon
-as tesseract returns. If the daemon is killed in that moment, the file stays
-until you delete it. It is created only for windows that passed the privacy
-tier check. On Windows the image goes to the OCR API in memory.
-
+**Linux OCR stays in memory.** The captured RGB image is sent to `tesseract` on stdin; ScreenSense does not create a raw PPM temporary file. On Windows the image goes to the OCR API in memory.
 **The data is not encrypted.** On Linux the directory is set to mode `0700`; on
 Windows it relies on the permissions of your user profile. Any program running
 as you can read it, and so can anyone with administrator access or with access
@@ -231,23 +224,14 @@ classified under the foreground window's name and title, not its own.
 
 ## Private browsing
 
-A private or incognito window often has an ordinary title, so the title rules
-cannot be relied on. ScreenSense asks the platform.
-
 | Platform | How | Result |
 |---|---|---|
-| Windows | A UI Automation walk over the browser's own controls, looking for private-mode markers. It is bounded (400 elements, depth 10, 600 ms). | Private → Hidden. Positively normal → Full. Could not tell (limits reached, accessibility tree not built yet, any error) → **unknown**. |
-| Linux / X11 | There is no signal to ask. | Always **unknown**. |
+| Windows | A bounded UI Automation walk over browser controls looks for private-mode markers (400 elements, depth 10, 600 ms). | Private means Hidden; positively normal means Full; errors or incomplete evidence mean unknown. |
+| Linux / X11 | There is no signal to ask. | Always unknown. |
 
-Unknown is handled by `privacy.unknown_browser`. The default, `"title_only"`,
-means an unknown browser window is **not captured**. On Linux/X11 this means
-that by default browser windows are recorded by title only. Setting
-`unknown_browser = "full"` captures them; private windows are then caught only
-if their title says so (the hidden-title rule above). Do not count on that:
-the title of a Chrome, Brave, Opera or Vivaldi incognito window does not.
+Unknown is handled by `privacy.unknown_browser`. The default, `title_only`, means an unknown browser window is not captured. On Linux/X11 this means browser windows are title-only by default. Setting `unknown_browser = "full"` captures them; private windows are then caught only if their title says so.
 
-The Windows probe has not been run on real hardware yet; see
-[WINDOWS-VERIFICATION.md](WINDOWS-VERIFICATION.md).
+The Windows private-browser probe has not been verified in real browsers. The passing Windows tests use synthetic owned-window fixtures and do not cover browser UI Automation. See [WINDOWS-VERIFICATION.md](WINDOWS-VERIFICATION.md).
 
 ## Sensitive-window memory
 
@@ -284,34 +268,17 @@ place, and neither are `screensense …` commands.
 
 Tightening a rule deletes matching history; it does not merely hide it.
 
-* The effective rule set (built-in plus yours) has a hash. The daemon compares
-  it with the stored one when it starts and, while it runs, within about 10
-  seconds of a change to the config file; if it differs (or none is stored
-  yet), every stored span, frame, error and command is re-checked against the
-  current rules. The new hash is stored after the purge succeeded, so a crash
-  half-way re-runs it.
-* `screensense purge` runs the same check on demand, whether or not the hash
-  changed. It works without the daemon, using the rules of the config file as
-  it is now.
-* A window that is now Hidden loses its stored title, frames, errors and
-  images. One that is now Title only loses its frames and images. A frame or
-  error whose text a new rule would mask or reject is deleted, because the
-  stored text and pixels predate the rule. A command that would now be cleaned
-  differently is deleted.
-* Image files are deleted from disk together with their rows.
+- The effective rule set (built-in plus yours) has a hash. The daemon compares it at startup and after config changes (checked about every 2 seconds); if it differs, stored spans, frames, errors and commands are re-checked, and derived analyzer insights are cleared. The hash is updated only after purge succeeds, so failures can be retried.
+- `screensense purge` performs the same check on demand, even when the hash has not changed. Invalid TOML or privacy regexes block the purge and any history output; diagnostics may display defaults for explanation but do not enable a fallback.
+- Current rules are applied again before `now`, `shot`, hooks, MCP and analyzer output. If an old frame's text matches a current soft mask, its JPEG is deleted and its image path is not returned.
+- Image deletion failures are reported. The history row remains deleted; a later purge can retry removing unreferenced images.
+- Pause and purge update a privacy revision. If either happens while OCR or delayed analysis is in progress, the stale work is cancelled and cannot write a frame, error, image, insight or analyzer job afterward.
 
-In addition, rules are applied again when stored data is read for a digest or
-a tool result, so a window that is now Hidden or title-only is shown as such
-even before a purge has run.
-
-Loosening a rule never brings anything back, and never widens what an old
-record shows.
+Loosening a rule never brings deleted data back or widens what an old record shows.
 
 ## Pausing
 
-`screensense pause [MIN]` stops recording; `screensense resume` continues. An
-agent can do the same through the `screen_pause` and `screen_resume` MCP
-tools. A pause is a request stored in the database and honoured by the daemon.
+`screensense pause [MIN]` requests a pause; `screensense resume` ends it early. MCP exposes only `screen_pause`: it can request a pause or extend the current deadline, but cannot shorten it or resume early. A pause request is stored in the database and honoured by the daemon.
 
 ## Deleting everything
 
@@ -319,17 +286,9 @@ tools. A pause is a request stored in the database and honoured by the daemon.
 screensense purge --all
 ```
 
-asks you to type `yes` (without a terminal it refuses unless you add `--yes`),
-then deletes every span, frame, error, command, insight and session, removes
-all images, drops the other bookkeeping rows (the daemon's heartbeat and any
-pause or stop request) and compacts the database file. It keeps your config
-file and, in the database, the `config.*` rows: the stored rules hash and the
-hashed sensitive-window marks, so that windows found sensitive earlier stay
-hidden. It does not remove `daemon.log`, `hook-errors.log` or a stray OCR temp
-file in the system temporary directory. A running daemon goes on recording
-afterwards.
+asks you to type `yes` (without a terminal it refuses unless you add `--yes`), then deletes every span, frame, error, command, insight and session, removes all images, and compacts the database file. It keeps your config, stored rules hash, hashed sensitive-window marks, and control pause/stop requests. It does not remove `daemon.log` or `hook-errors.log`. If an image-file deletion fails, ScreenSense reports the residual file; the history row stays deleted. A later `screensense purge` can retry deleting unreferenced images. Purge does not clear pause/stop controls. If capture is still paused or stopped, it stays that way; otherwise a running daemon may continue recording.
 
-To remove every trace, stop the daemon and delete the data directory:
+SQLite `secure_delete`, FTS cleanup and WAL checkpointing reduce remnants on a best-effort basis. They do not guarantee forensic erasure, especially on SSDs, snapshots or backups. To remove local state, stop the daemon and delete the data directory:
 
 ```
 screensense daemon stop
@@ -339,8 +298,7 @@ Remove-Item -Recurse -Force "$env:LOCALAPPDATA\screensense"
 rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/screensense"
 ```
 
-`screensense setup --remove` takes the hook or MCP entry out of your AI tools,
-and `screensense autostart off` removes the sign-in entry.
+`screensense setup --remove` takes the hook or MCP entry out of your AI tools, and `screensense autostart off` removes the sign-in entry.
 
 ## What `doctor --capture` prints
 

@@ -1,8 +1,9 @@
 name: Release
 
-# Pushing a tag such as v0.1.0 builds both archives and publishes a GitHub
-# release. Running the workflow by hand builds the same archives and keeps
-# them as workflow artifacts only.
+# Pushing a tag such as v0.2.0 builds both archives, takes the Windows
+# installer that the validated CI run built and tested (artifact
+# `windows-installer`), and publishes a GitHub release. Running the workflow by
+# hand builds the same files and keeps them as workflow artifacts only.
 on:
   push:
     tags: ["v*"]
@@ -10,13 +11,24 @@ on:
 
 permissions:
   contents: write
+  # The reused CI workflow reads workflow artifacts; a called workflow cannot
+  # ask for more than its caller grants.
+  actions: read
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  validate:
+    name: Validate tagged commit
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+      actions: read
+
   build:
     name: Build ${{ matrix.target }}
+    needs: validate
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -29,6 +41,8 @@ jobs:
             os: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -39,7 +53,7 @@ jobs:
           key: release-${{ matrix.target }}
 
       - name: Build
-        run: cargo build --release --locked -p screensense --target ${{ matrix.target }}
+        run: cargo build --release --locked -j1 -p screensense --target ${{ matrix.target }}
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
@@ -49,7 +63,17 @@ jobs:
           $name = "screensense-${{ matrix.target }}"
           New-Item -ItemType Directory -Force -Path "dist/$name" | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/screensense.exe" "dist/$name/"
-          Copy-Item README.md, README.zh-TW.md, LICENSE, THIRD-PARTY-NOTICES.md "dist/$name/"
+          Copy-Item README.md, README.zh-TW.md, LICENSE, THIRD-PARTY-NOTICES.md, SECURITY.md, CHANGELOG.md, install.ps1, install.sh "dist/$name/"
+          Copy-Item docs "dist/$name/docs" -Recurse
+          New-Item -ItemType Directory -Force -Path "dist/$name/skills/screen" | Out-Null
+          Copy-Item skills/screen/SKILL.md "dist/$name/skills/screen/"
+          cargo metadata --format-version 1 --locked --filter-platform '${{ matrix.target }}' | Set-Content dist/dependency-metadata.json -Encoding utf8
+          if ($LASTEXITCODE -ne 0) { throw "dependency metadata failed" }
+          python scripts/collect_licenses.py dist/dependency-metadata.json "dist/$name/LICENSES"
+          if ($LASTEXITCODE -ne 0) { throw "dependency license collection failed" }
+          $version = (& "target/${{ matrix.target }}/release/screensense.exe" --version) -replace '^screensense\s+', ''
+          if ($LASTEXITCODE -ne 0) { throw "binary version check failed" }
+          "commit=${{ github.sha }}`nversion=$version`nref=${{ github.ref_name }}`ntarget=${{ matrix.target }}`nsignature=unsigned" | Set-Content "dist/$name/BUILD-INFO.txt" -Encoding utf8
           Compress-Archive -Path "dist/$name/*" -DestinationPath "dist/$name.zip" -Force
 
       - name: Package (Linux)
@@ -59,8 +83,25 @@ jobs:
           name="screensense-${{ matrix.target }}"
           mkdir -p "dist/$name"
           cp "target/${{ matrix.target }}/release/screensense" "dist/$name/"
-          cp README.md README.zh-TW.md LICENSE THIRD-PARTY-NOTICES.md "dist/$name/"
+          cp README.md README.zh-TW.md LICENSE THIRD-PARTY-NOTICES.md SECURITY.md CHANGELOG.md install.ps1 install.sh "dist/$name/"
+          cp -R docs "dist/$name/docs"
+          mkdir -p "dist/$name/skills/screen"
+          cp skills/screen/SKILL.md "dist/$name/skills/screen/"
+          cargo metadata --format-version 1 --locked --filter-platform '${{ matrix.target }}' > dist/dependency-metadata.json
+          python3 scripts/collect_licenses.py dist/dependency-metadata.json "dist/$name/LICENSES"
+          version=$("target/${{ matrix.target }}/release/screensense" --version | cut -d ' ' -f 2)
+          printf 'commit=%s\nversion=%s\nref=%s\ntarget=%s\nsignature=unsigned\n' '${{ github.sha }}' "$version" '${{ github.ref_name }}' '${{ matrix.target }}' > "dist/$name/BUILD-INFO.txt"
           tar -C "dist/$name" -czf "dist/$name.tar.gz" .
+
+      # Extract the actual archive into a path with spaces and exercise only
+      # isolated CLI/history/MCP fixtures. Never observe the runner's desktop.
+      - name: Clean archive smoke (Windows)
+        if: runner.os == 'Windows'
+        run: python scripts/release_smoke.py "dist/screensense-${{ matrix.target }}.zip" --commit "${{ github.sha }}" --output "dist/package-smoke-${{ matrix.target }}.json"
+
+      - name: Clean archive smoke (Linux)
+        if: runner.os == 'Linux'
+        run: python3 scripts/release_smoke.py "dist/screensense-${{ matrix.target }}.tar.gz" --commit "${{ github.sha }}" --output "dist/package-smoke-${{ matrix.target }}.json"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -68,6 +109,7 @@ jobs:
           path: |
             dist/*.zip
             dist/*.tar.gz
+            dist/package-smoke-*.json
           if-no-files-found: error
 
   publish:
@@ -75,16 +117,46 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      # Only the per-target archives (artifacts named screensense-<target>);
+      # CI's other artifacts (fixtures, evidence, payload) are not released.
       - uses: actions/download-artifact@v4
         with:
+          pattern: screensense-*
           path: dist
           merge-multiple: true
+
+      # Built, installed, upgraded and uninstalled by the `validate` job of this
+      # same run, so it is the tested installer for this commit.
+      - name: Download Windows installer from the validated run
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-installer
+          path: dist
+
+      - name: Check Windows installer files
+        run: |
+          set -eu
+          cd dist
+          test "$(ls ScreenSense-*-windows-x64-setup.exe | wc -l)" = 1
+          test "$(ls ScreenSense-*-windows-x64-setup.sha256 | wc -l)" = 1
+          test "$(ls ScreenSense-*-windows-x64-setup.build.json | wc -l)" = 1
+          # The .sha256 file is written by PowerShell and has CRLF line endings.
+          sed 's/[[:cntrl:]]$//' ScreenSense-*-windows-x64-setup.sha256 | sha256sum -c -
+          jq -e --arg sha '${{ github.sha }}' '.commit == $sha and .signed == false' ScreenSense-*-windows-x64-setup.build.json
+          if [ '${{ github.ref_type }}' = tag ]; then
+            tag='${{ github.ref_name }}'
+            jq -e --arg v "${tag#v}" '.version == $v' ScreenSense-*-windows-x64-setup.build.json
+          fi
 
       - name: Write SHA256SUMS
         run: |
           set -eu
           cd dist
-          sha256sum screensense-*.zip screensense-*.tar.gz > SHA256SUMS
+          sha256sum screensense-*.zip screensense-*.tar.gz package-smoke-*.json ScreenSense-*-windows-x64-setup.exe > SHA256SUMS
           cat SHA256SUMS
 
       # Manual runs: keep everything as one artifact, publish nothing.
@@ -101,6 +173,10 @@ jobs:
           files: |
             dist/screensense-*.zip
             dist/screensense-*.tar.gz
+            dist/package-smoke-*.json
+            dist/ScreenSense-*-windows-x64-setup.exe
+            dist/ScreenSense-*-windows-x64-setup.sha256
+            dist/ScreenSense-*-windows-x64-setup.build.json
             dist/SHA256SUMS
           fail_on_unmatched_files: true
-          generate_release_notes: true
+          body_path: docs/RELEASE-NOTES.md

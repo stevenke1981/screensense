@@ -15,9 +15,9 @@ use windows::Data::Xml::Dom::XmlDocument;
 use windows::Win32::Foundation::{HWND, LPARAM, RECT};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
 use windows::Win32::Graphics::Gdi::{
-    BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits,
-    GetWindowDC, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
-    HBITMAP, HDC, HGDIOBJ, SRCCOPY,
+    CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits, GetWindowDC,
+    ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC,
+    HGDIOBJ,
 };
 use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS};
 use windows::Win32::System::SystemInformation::GetTickCount;
@@ -200,37 +200,27 @@ impl Platform for WinPlatform {
         let plan =
             plan_capture(window, frame).map_err(|why| PlatformError::WindowGone(why.into()))?;
 
-        // 1. PrintWindow (works for occluded windows).
-        match render(hwnd, &plan, Render::PrintWindow) {
-            Ok(bgra) => {
-                if let Some(rgba) = bgra_to_rgba_crop(&bgra, &plan) {
-                    if !is_uniform(&rgba) {
-                        return Ok(image_from(&plan, rgba));
+        // Both PrintWindow modes address only this HWND, never the desktop DC.
+        // Our remote-session fixture reports success with uniform pixels in
+        // full-content mode. Retry the documented default on the same window.
+        for flags in [PW_RENDERFULLCONTENT, PRINT_WINDOW_FLAGS(0)] {
+            match render(hwnd, &plan, flags) {
+                Ok(bgra) => {
+                    if let Some(rgba) = bgra_to_rgba_crop(&bgra, &plan) {
+                        if !is_uniform(&rgba) {
+                            return Ok(image_from(&plan, rgba));
+                        }
                     }
                 }
+                Err(RenderError::PrintFailed) => {}
+                Err(RenderError::Os(msg)) => return Err(PlatformError::Os(msg)),
             }
-            Err(RenderError::PrintFailed) => {}
-            Err(RenderError::Os(msg)) => return Err(PlatformError::Os(msg)),
         }
 
-        // 2. Fallback: copy from the screen. Only right when nothing covers
-        // the window, so it is limited to the window in front.
-        // SAFETY: no arguments.
-        if unsafe { GetForegroundWindow() } != hwnd {
-            return Err(PlatformError::WindowGone(
-                "PrintWindow gave no usable frame and the window is not in front".into(),
-            ));
-        }
-        let bgra = render(hwnd, &plan, Render::Screen).map_err(|e| match e {
-            RenderError::PrintFailed => PlatformError::Os("screen copy failed".into()),
-            RenderError::Os(msg) => PlatformError::Os(msg),
-        })?;
-        let rgba = bgra_to_rgba_crop(&bgra, &plan)
-            .ok_or_else(|| PlatformError::Os("captured bitmap has the wrong size".into()))?;
-        if is_uniform(&rgba) {
-            return Err(PlatformError::WindowGone("blank frame".into()));
-        }
-        Ok(image_from(&plan, rgba))
+        Err(PlatformError::WindowGone(
+            "PrintWindow gave no usable frame; desktop-copy fallback is disabled for privacy"
+                .into(),
+        ))
     }
 
     fn is_private_browsing(&mut self, win: &WindowInfo) -> Option<bool> {
@@ -426,26 +416,6 @@ impl Drop for WindowDc {
     }
 }
 
-/// `GetDC(NULL)` / `ReleaseDC`: the whole-screen DC.
-struct ScreenDc(HDC);
-
-impl ScreenDc {
-    fn acquire() -> Option<Self> {
-        // SAFETY: a failure returns a null HDC, checked below.
-        let hdc = unsafe { GetDC(None) };
-        (!hdc.is_invalid()).then_some(ScreenDc(hdc))
-    }
-}
-
-impl Drop for ScreenDc {
-    fn drop(&mut self) {
-        // SAFETY: `0` came from GetDC(NULL) and is released once.
-        unsafe {
-            ReleaseDC(None, self.0);
-        }
-    }
-}
-
 /// `CreateCompatibleDC` / `DeleteDC`.
 struct MemDc(HDC);
 
@@ -528,14 +498,6 @@ impl Drop for Selected {
 // Capture
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy)]
-enum Render {
-    /// `PrintWindow(PW_RENDERFULLCONTENT)`.
-    PrintWindow,
-    /// `BitBlt` from the screen DC at the window's visible rectangle.
-    Screen,
-}
-
 enum RenderError {
     /// `PrintWindow` returned FALSE.
     PrintFailed,
@@ -549,7 +511,7 @@ enum RenderError {
 fn render(
     hwnd: HWND,
     plan: &CapturePlan,
-    how: Render,
+    flags: PRINT_WINDOW_FLAGS,
 ) -> std::result::Result<Vec<u8>, RenderError> {
     let os = |m: &str| RenderError::Os(m.to_string());
     let window_dc = WindowDc::acquire(hwnd).ok_or_else(|| os("GetWindowDC failed"))?;
@@ -559,33 +521,9 @@ fn render(
     let mut selected =
         Selected::select(mem_dc.0, &bitmap).ok_or_else(|| os("SelectObject failed"))?;
 
-    match how {
-        Render::PrintWindow => {
-            // SAFETY: live window handle and memory DC.
-            if !unsafe { PrintWindow(hwnd, mem_dc.0, PW_RENDERFULLCONTENT) }.as_bool() {
-                return Err(RenderError::PrintFailed);
-            }
-        }
-        Render::Screen => {
-            let screen = ScreenDc::acquire().ok_or_else(|| os("GetDC(screen) failed"))?;
-            // Copy the visible part to the same place it has in the
-            // window-sized bitmap, so the crop below is identical for both paths.
-            // SAFETY: both DCs are live and the rectangle was validated by `plan_capture`.
-            unsafe {
-                BitBlt(
-                    mem_dc.0,
-                    plan.crop_x,
-                    plan.crop_y,
-                    plan.crop_w,
-                    plan.crop_h,
-                    Some(screen.0),
-                    plan.origin_x + plan.crop_x,
-                    plan.origin_y + plan.crop_y,
-                    SRCCOPY,
-                )
-            }
-            .map_err(|e| RenderError::Os(format!("BitBlt failed: {e}")))?;
-        }
+    // SAFETY: live window handle and memory DC. Never read the desktop DC.
+    if !unsafe { PrintWindow(hwnd, mem_dc.0, flags) }.as_bool() {
+        return Err(RenderError::PrintFailed);
     }
 
     // GetDIBits requires that the bitmap is not selected into a DC.
@@ -638,9 +576,6 @@ fn image_from(plan: &CapturePlan, rgba: Vec<u8>) -> Image {
 /// Geometry of one capture, in window-local pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CapturePlan {
-    /// Screen position of the window rectangle's top-left corner.
-    origin_x: i32,
-    origin_y: i32,
     /// Size of the full window rectangle (what PrintWindow renders).
     win_w: i32,
     win_h: i32,
@@ -682,8 +617,6 @@ fn plan_capture(window: RECT, frame: RECT) -> std::result::Result<CapturePlan, &
     // (so each side is < 80 million and fits an i32).
     let to_i32 = |v: i64| i32::try_from(v).map_err(|_| "window is too large to capture");
     Ok(CapturePlan {
-        origin_x: window.left,
-        origin_y: window.top,
         win_w: to_i32(win_w)?,
         win_h: to_i32(win_h)?,
         crop_x: to_i32(cx)?,
@@ -829,6 +762,262 @@ impl PrivateCache {
 mod tests {
     use super::*;
 
+    /// Explicit native smoke test: only this process's nonactivating fixture is rendered.
+    /// It never observes the foreground window and capture has no desktop-copy fallback.
+    #[test]
+    #[ignore = "opt-in native fixture; requires Windows desktop APIs and an OCR language"]
+    fn windows_fixture_capture_and_ocr() {
+        use windows::core::w;
+        use windows::Win32::Foundation::{COLORREF, LRESULT, WPARAM};
+        use windows::Win32::Graphics::Gdi::{
+            BeginPaint, CreateFontW, DrawTextW, EndPaint, FillRect, GetStockObject, SetTextColor,
+            UpdateWindow, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_QUALITY, DT_LEFT,
+            DT_NOPREFIX, DT_TOP, HBRUSH, OUT_DEFAULT_PRECIS, PAINTSTRUCT, WHITE_BRUSH,
+        };
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DefWindowProcW, DestroyWindow, RegisterClassW, UnregisterClassW,
+            WM_PAINT, WM_PRINT, WM_PRINTCLIENT, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+            WS_POPUP, WS_VISIBLE,
+        };
+        // A hidden STATIC control is allowed to ignore WM_PRINT. This class explicitly
+        // paints only constant fixture text into its own paint DC or PrintWindow DC.
+        unsafe extern "system" fn paint_fixture(
+            hwnd: HWND,
+            msg: u32,
+            wp: WPARAM,
+            lp: LPARAM,
+        ) -> LRESULT {
+            if msg == WM_PRINT || msg == WM_PRINTCLIENT || msg == WM_PAINT {
+                // SAFETY: Windows supplied this DC for this self-owned window's PrintWindow message.
+                unsafe {
+                    let mut paint = PAINTSTRUCT::default();
+                    let dc = if msg == WM_PAINT {
+                        BeginPaint(hwnd, &mut paint)
+                    } else {
+                        HDC(wp.0 as *mut std::ffi::c_void)
+                    };
+                    let mut bounds = RECT {
+                        left: 0,
+                        top: 0,
+                        right: 900,
+                        bottom: 220,
+                    };
+                    FillRect(dc, &bounds, HBRUSH(GetStockObject(WHITE_BRUSH).0));
+                    // Leave room for the real DWM frame crop on desktop versions
+                    // that include an invisible border around a popup window.
+                    bounds.left = 20;
+                    bounds.top = 20;
+                    bounds.right = 880;
+                    bounds.bottom = 200;
+                    SetTextColor(dc, COLORREF(0));
+                    let font = CreateFontW(
+                        36,
+                        0,
+                        0,
+                        0,
+                        400,
+                        0,
+                        0,
+                        0,
+                        DEFAULT_CHARSET,
+                        OUT_DEFAULT_PRECIS,
+                        CLIP_DEFAULT_PRECIS,
+                        DEFAULT_QUALITY,
+                        0,
+                        w!("Arial"),
+                    );
+                    let old = SelectObject(dc, HGDIOBJ(font.0));
+                    let mut text: Vec<u16> =
+                        "HELLO SCREENSENSE FIXTURE\r\nBUILD COMPLETE NO ERRORS"
+                            .encode_utf16()
+                            .collect();
+                    DrawTextW(dc, &mut text, &mut bounds, DT_LEFT | DT_TOP | DT_NOPREFIX);
+                    SelectObject(dc, old);
+                    let _ = DeleteObject(HGDIOBJ(font.0));
+                    if msg == WM_PAINT {
+                        let _ = EndPaint(hwnd, &paint);
+                    }
+                }
+                return LRESULT(0);
+            }
+            // SAFETY: forwarding messages for the self-owned registered class.
+            unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
+        }
+        struct Fixture {
+            hwnd: HWND,
+        }
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                // SAFETY: only this fixture owns the window and registered class.
+                unsafe {
+                    let _ = DestroyWindow(self.hwnd);
+                    let _ = UnregisterClassW(w!("ScreenSenseIsolatedFixture"), None);
+                }
+            }
+        }
+        // SAFETY: constant class name and callback; the window contains only synthetic text and cannot activate.
+        let hwnd = unsafe {
+            assert_ne!(
+                RegisterClassW(&WNDCLASSW {
+                    lpfnWndProc: Some(paint_fixture),
+                    lpszClassName: w!("ScreenSenseIsolatedFixture"),
+                    ..Default::default()
+                }),
+                0
+            );
+            CreateWindowExW(
+                WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+                w!("ScreenSenseIsolatedFixture"),
+                w!("self-owned synthetic fixture"),
+                WS_POPUP | WS_VISIBLE,
+                30,
+                30,
+                900,
+                220,
+                None,
+                None,
+                None,
+                None,
+            )
+        }
+        .expect("create self-owned nonactivating fixture");
+        let fixture = Fixture { hwnd };
+        // SAFETY: paint only the new fixture; WS_EX_NOACTIVATE prevents stealing focus.
+        unsafe {
+            let _ = UpdateWindow(hwnd);
+        }
+        let mut platform = WinPlatform::new();
+        let image = platform
+            .capture(&WindowInfo {
+                handle: hwnd_to_handle(fixture.hwnd),
+                pid: std::process::id(),
+                app: "screensense-fixture".into(),
+                title: "self-owned fixture".into(),
+                width: 900,
+                height: 220,
+                ..Default::default()
+            })
+            .expect("PrintWindow fixture capture (no desktop fallback)");
+        let mut ocr = crate::win_ocr::create("en-US").expect("Windows OCR en-US language");
+        let lines = ocr.recognize(&image).expect("OCR synthetic fixture pixels");
+        let text = lines
+            .iter()
+            .flat_map(|l| &l.words)
+            .map(|w| w.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            text.to_uppercase().contains("SCREENSENSE"),
+            "synthetic OCR: {text}"
+        );
+        assert!(
+            text.to_uppercase().contains("BUILD COMPLETE"),
+            "synthetic OCR: {text}"
+        );
+        assert!(lines
+            .iter()
+            .flat_map(|l| &l.words)
+            .all(|w| w.x + w.w <= image.width && w.y + w.h <= image.height));
+        println!("native fixture only: PrintWindow {}x{}, {}, {} words; fixture handles cleaned at test exit", image.width, image.height, ocr.name(), lines.iter().map(|l| l.words.len()).sum::<usize>());
+    }
+
+    /// Native OCR, with a GDI-generated in-memory bitmap and no screen/DC read.
+    #[test]
+    #[ignore = "opt-in native OCR; requires an installed Windows OCR language"]
+    fn windows_synthetic_ocr() {
+        use windows::core::w;
+        use windows::Win32::Foundation::COLORREF;
+        use windows::Win32::Graphics::Gdi::{
+            CreateDIBSection, CreateFontW, DrawTextW, FillRect, GdiFlush, GetStockObject,
+            SetTextColor, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_QUALITY, DT_LEFT,
+            DT_NOPREFIX, DT_TOP, HBRUSH, OUT_DEFAULT_PRECIS, WHITE_BRUSH,
+        };
+        let plan = plan_capture(rect(0, 0, 900, 220), rect(0, 0, 900, 220)).unwrap();
+        let mem = MemDc::create(HDC::default()).expect("memory DC, no screen DC");
+        let info = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: 900,
+                biHeight: -220,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut bits = std::ptr::null_mut();
+        // SAFETY: the info describes a bounded bitmap; bits is a valid out pointer.
+        let bitmap = Bitmap(
+            unsafe { CreateDIBSection(Some(mem.0), &info, DIB_RGB_COLORS, &mut bits, None, 0) }
+                .expect("in-memory bitmap"),
+        );
+        let _selected = Selected::select(mem.0, &bitmap).unwrap();
+        // SAFETY: live owned memory DC and bitmap; only constant synthetic text is painted.
+        let bgra = unsafe {
+            let mut bounds = rect(0, 0, 900, 220);
+            FillRect(mem.0, &bounds, HBRUSH(GetStockObject(WHITE_BRUSH).0));
+            SetTextColor(mem.0, COLORREF(0));
+            let font = CreateFontW(
+                36,
+                0,
+                0,
+                0,
+                400,
+                0,
+                0,
+                0,
+                DEFAULT_CHARSET,
+                OUT_DEFAULT_PRECIS,
+                CLIP_DEFAULT_PRECIS,
+                DEFAULT_QUALITY,
+                0,
+                w!("Arial"),
+            );
+            let old = SelectObject(mem.0, HGDIOBJ(font.0));
+            let mut text: Vec<u16> = "HELLO SCREENSENSE FIXTURE\r\nBUILD COMPLETE NO ERRORS"
+                .encode_utf16()
+                .collect();
+            DrawTextW(
+                mem.0,
+                &mut text,
+                &mut bounds,
+                DT_LEFT | DT_TOP | DT_NOPREFIX,
+            );
+            SelectObject(mem.0, old);
+            let _ = DeleteObject(HGDIOBJ(font.0));
+            assert!(GdiFlush().as_bool(), "flush synthetic GDI writes");
+            assert!(!bits.is_null());
+            // CreateDIBSection owns this allocation until bitmap is dropped, below.
+            std::slice::from_raw_parts(bits.cast::<u8>(), 900 * 220 * 4).to_vec()
+        };
+        let image = image_from(&plan, bgra_to_rgba_crop(&bgra, &plan).unwrap());
+        assert!(!is_uniform(&image.rgba), "synthetic bitmap has text");
+        let mut ocr = crate::win_ocr::create("en-US").expect("Windows OCR language");
+        let lines = ocr.recognize(&image).expect("recognize in-memory fixture");
+        let text = lines
+            .iter()
+            .flat_map(|l| &l.words)
+            .map(|w| w.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            text.to_uppercase().contains("SCREENSENSE"),
+            "synthetic OCR: {text}"
+        );
+        assert!(
+            text.to_uppercase().contains("BUILD COMPLETE"),
+            "synthetic OCR: {text}"
+        );
+        println!(
+            "native OCR only: {}x{}, {}, {} words; no screen read",
+            image.width,
+            image.height,
+            ocr.name(),
+            lines.iter().map(|l| l.words.len()).sum::<usize>()
+        );
+    }
+
     fn rect(left: i32, top: i32, right: i32, bottom: i32) -> RECT {
         RECT {
             left,
@@ -867,7 +1056,6 @@ mod tests {
             (plan.crop_x, plan.crop_y, plan.crop_w, plan.crop_h),
             (7, 0, 1000, 700)
         );
-        assert_eq!((plan.origin_x, plan.origin_y), (100, 100));
     }
 
     #[test]
@@ -910,8 +1098,6 @@ mod tests {
             bgra.extend_from_slice(&[i, i + 10, i + 20, 0]); // B, G, R, A=0
         }
         let plan = CapturePlan {
-            origin_x: 0,
-            origin_y: 0,
             win_w: 3,
             win_h: 2,
             crop_x: 1,
@@ -926,8 +1112,6 @@ mod tests {
     #[test]
     fn crop_rejects_short_buffers_and_bad_plans() {
         let plan = CapturePlan {
-            origin_x: 0,
-            origin_y: 0,
             win_w: 4,
             win_h: 4,
             crop_x: 0,

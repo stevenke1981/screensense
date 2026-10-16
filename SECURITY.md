@@ -89,8 +89,7 @@ error lines are all treated as attacker-influenced. The local model's answer
   followed and no credentials are sent.
 * Privacy rules fail closed: an unknown tier reads as Hidden, an unknown
   browser state is not captured, no OCR engine means nothing is captured, an
-  unparseable config file means built-in defaults (never "no rules"), and user
-  rules can only add to built-in ones.
+  invalid TOML or privacy regexes block recording and history output. Diagnostics may show defaults as explanatory values, but they do not enable recording under those defaults; user rules can only add to built-in ones.
 * The programs it starts are fixed: `tesseract` (Linux, for OCR) and
   `notify-send` (Linux, for notifications). It does not run anything it read
   on screen.
@@ -110,22 +109,16 @@ on ScreenSense.
 * **The database and images are not encrypted.** They are protected only by
   the permissions of your user profile (mode `0700` on the data directory on
   Linux; the profile ACL on Windows). Any process running as you can read
-  them. Use full-disk encryption if the machine can be lost or shared.
+  them. SQLite secure-delete, FTS and WAL cleanup are best effort, not forensic erasure from SSDs or backups. Use full-disk encryption if the machine can be lost or shared.
 * **Detection is best effort.** Sensitive windows are recognised by app name
   and title; secrets by pattern. A site that is not on a list, a secret
   without a recognisable shape, or text the OCR engine misread is not caught.
   A secret that OCR misreads is neither detected nor blacked out in the image.
-* **While a config file does not parse, only the built-in rules are in
-  force.** Your own additions (hidden apps, regexes, keywords) are ignored
-  until the file is fixed, and a running daemon keeps recording under the
-  built-in rules. The problem is shown by `status`, `doctor` and
-  `config check`; the daemon reloads the file about every 10 seconds.
-* **On Linux the unredacted window is briefly on disk.** To run `tesseract`
-  the daemon writes the captured window, before redaction, to a `0600` PPM
-  file in the system temporary directory and deletes it when tesseract
-  returns. A daemon killed at that moment leaves the file behind. The rule
-  that only redacted data reaches disk therefore holds for the data directory,
-  not for this temporary file. Windows OCR gets the image in memory.
+* Quoted executable paths remain a syntax limitation for generated PowerShell hooks.
+  Regex and OCR filtering are not security guarantees; sensitive-window marks
+  do not expire and have no UI clear operation.
+* **Invalid privacy configuration fails closed.** Invalid TOML or privacy regexes block recording and history reads. Diagnostic commands may display defaults for explanation; this is not a recording fallback. The daemon checks configuration about every 2 seconds.
+* **OCR input is not written as a raw Linux PPM temporary file.** Linux sends captured image bytes to tesseract stdin; Windows OCR uses memory.
 * **`doctor --capture` prints recognised text without a fence.** It shows at
   most three lines, soft hits masked, and nothing if the text trips a content
   check; it prints the window title only for windows recorded in full. Read it
@@ -136,11 +129,9 @@ on ScreenSense.
 * **A stored image path is a capability.** If the digest mentions an image
   path, an agent with file access can open that image. Turn it off with
   `digest.include_image_path = false` or `capture.keep_images = false`.
-* **The Windows backend has not been run on real hardware** at the time of the
-  0.1.0 release, including the private-browsing probe. See
-  [docs/WINDOWS-VERIFICATION.md](docs/WINDOWS-VERIFICATION.md).
+* **Windows evidence is limited to synthetic fixtures.** Local and CI-owned window capture/OCR fixtures passed, as did memory-only OCR. Real applications, private-browser UI Automation, notifications and live agent sessions remain unverified. See [docs/WINDOWS-VERIFICATION.md](docs/WINDOWS-VERIFICATION.md).
 * **On Linux/X11 the private-browsing state cannot be determined**, so browser
   windows are title-only by default.
 * Release archives are checked against a `SHA256SUMS` file from the same
   release. That detects a corrupted download; it does not prove who built the
-  release. The binaries are not code-signed.
+  release. Windows archives are unsigned; binaries are not code-signed.

@@ -2,11 +2,13 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, feature/slint-gnome-gui]
   pull_request:
+  workflow_call:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -21,11 +23,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Test the exact candidate SHA rather than GitHub's synthetic PR merge.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Install tesseract and Xvfb
         run: |
           sudo apt-get update
-          sudo apt-get install -y tesseract-ocr xvfb
+          sudo apt-get install -y tesseract-ocr xvfb fonts-noto-cjk libfontconfig1-dev libxkbcommon-x11-0
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -37,19 +42,37 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -j1 -- -D warnings
 
       - name: Tests
-        run: cargo test --workspace
+        run: cargo test --workspace --locked -j1 -- --test-threads=1
+
+      - name: Build GUI
+        run: cargo build --locked -j1 -p screensense-gui
+
+      - name: GUI rendering and safe interactions (isolated Xvfb window)
+        env:
+          SCREENSENSE_NO_SCREEN: "1"
+        run: xvfb-run -a -s "-screen 0 1280x800x24" target/debug/screensense-gui --verify-native "$RUNNER_TEMP/gui-native-fixture"
+
+      - name: GUI verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-gui-verification
+          path: |
+            ${{ runner.temp }}/gui-native-fixture/*.png
+            ${{ runner.temp }}/gui-native-fixture/verification.json
+          if-no-files-found: warn
 
       # Three tests need a real X server. Without SCREENSENSE_X11_TEST=1 the
-      # first two return early, which is why `cargo test --workspace` above
+      # first two return early, which is why `cargo test --workspace --locked -j1 -- --test-threads=1` above
       # passes on a machine without a display; the third skips itself when
       # Xvfb or the demo window is missing. A skipped test counts as passed
       # by cargo, so each step below also fails when the log says "skipped"
       # or when no test ran.
       - name: Build the demo window
-        run: cargo build -p screensense-platform --example demo_window
+        run: cargo build --locked -j1 -p screensense-platform --example demo_window
 
       # Platform backend: window list, capture, OCR and private-browsing
       # answer against the demo window, plus a reconnect test.
@@ -60,7 +83,7 @@ jobs:
         run: |
           log="$RUNNER_TEMP/x11-platform.log"
           xvfb-run -a -s "-screen 0 1280x800x24" \
-            cargo test -p screensense-platform --test x11_e2e -- --nocapture --test-threads=1 \
+            cargo test --locked -j1 -p screensense-platform --test x11_e2e -- --nocapture --test-threads=1 \
             2>&1 | tee "$log"
           if grep -Eqi 'skipped' "$log"; then echo "::error::an X11 test was skipped"; exit 1; fi
           if ! grep -Eq '^test result: ok\. [1-9][0-9]* passed' "$log"; then echo "::error::no X11 test ran"; exit 1; fi
@@ -75,7 +98,7 @@ jobs:
         run: |
           log="$RUNNER_TEMP/x11-daemon.log"
           xvfb-run -a -s "-screen 0 1280x800x24" \
-            cargo test -p screensense daemon::tests::x11_end_to_end -- --nocapture --test-threads=1 \
+            cargo test --locked -j1 -p screensense daemon::tests::x11_end_to_end -- --nocapture --test-threads=1 \
             2>&1 | tee "$log"
           if grep -Eqi 'skipped' "$log"; then echo "::error::the daemon test was skipped"; exit 1; fi
           if ! grep -Eq '^test result: ok\. 1 passed' "$log"; then echo "::error::the daemon test did not run"; exit 1; fi
@@ -89,7 +112,7 @@ jobs:
         run: |
           log="$RUNNER_TEMP/x11-cli.log"
           xvfb-run -a -s "-screen 0 1280x800x24" \
-            cargo test -p screensense --test cli x11:: -- --nocapture --test-threads=1 \
+            cargo test --locked -j1 -p screensense --test cli x11:: -- --nocapture --test-threads=1 \
             2>&1 | tee "$log"
           if grep -Eqi 'skipped' "$log"; then echo "::error::the doctor --capture test was skipped"; exit 1; fi
           if ! grep -Eq '^test result: ok\. 1 passed' "$log"; then echo "::error::the doctor --capture test did not run"; exit 1; fi
@@ -99,36 +122,144 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Test the exact candidate SHA rather than GitHub's synthetic PR merge.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -j1 -- -D warnings
 
       - name: Tests
-        run: cargo test --workspace
+        run: cargo test --workspace --locked -j1 -- --test-threads=1
 
-      # ---- Smoke: run the real binary on a real Windows machine ----------
-      # A hosted runner may have no interactive desktop and no OCR language
-      # pack, so `doctor --capture` is allowed to fail. Its output is the
-      # evidence: read it in the job log.
-      - name: "Smoke: doctor --capture (may fail on a headless runner)"
+      - name: Build GUI
+        run: cargo build --locked -j1 -p screensense-gui
+
+      - name: GUI software rendering and safe interactions (isolated)
+        env:
+          SCREENSENSE_NO_SCREEN: "1"
+        run: target\debug\screensense-gui.exe --verify-ui "$env:RUNNER_TEMP\gui-software-fixture"
+
+      - name: Package the tested Windows GUI candidate
+        shell: pwsh
+        run: |
+          $candidate = Join-Path $env:RUNNER_TEMP 'windows-gui-tested'
+          New-Item -ItemType Directory -Path $candidate | Out-Null
+          Copy-Item -LiteralPath 'target/debug/screensense-gui.exe' -Destination $candidate
+          Copy-Item -LiteralPath 'crates/gui/LICENSE' -Destination (Join-Path $candidate 'LICENSE-GUI-GPL-3.0.txt')
+          Copy-Item -LiteralPath 'LICENSE' -Destination (Join-Path $candidate 'LICENSE-CORE-MIT.txt')
+          Copy-Item -LiteralPath 'THIRD-PARTY-NOTICES.md','docs/GUI.md' -Destination $candidate
+          Copy-Item -LiteralPath "$env:RUNNER_TEMP/gui-software-fixture/verification.json" -Destination $candidate
+          git archive --format=tar --output="$candidate/source.tar" HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Corresponding source archive failed' }
+          $sha = (git rev-parse HEAD).Trim()
+          $exeHash = (Get-FileHash -LiteralPath "$candidate/screensense-gui.exe" -Algorithm SHA256).Hash.ToLowerInvariant()
+          @{ commit=$sha; executable_sha256=$exeHash; profile='debug'; purpose='tested GUI candidate, not a release'; source="https://github.com/stevenke1981/screensense/tree/$sha" } |
+            ConvertTo-Json | Set-Content -LiteralPath "$candidate/BUILD-INFO.json" -Encoding utf8
+          Get-ChildItem -LiteralPath $candidate -File | Sort-Object Name | ForEach-Object {
+            '{0}  {1}' -f (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.Name
+          } | Set-Content -LiteralPath "$candidate/SHA256SUMS.txt" -Encoding utf8
+
+      - name: Tested Windows GUI executable and corresponding source
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-gui-tested
+          path: ${{ runner.temp }}/windows-gui-tested/
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: GUI verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-gui-verification
+          path: |
+            ${{ runner.temp }}/gui-software-fixture/*.png
+            ${{ runner.temp }}/gui-software-fixture/verification.json
+          if-no-files-found: warn
+
+      # Only the self-owned nonactivating fixture is rendered. Headless runner
+      # limitations remain visible as a failed optional step, never a native pass.
+      - name: Native Windows fixture capture and OCR (requires desktop support)
         continue-on-error: true
-        run: cargo run --release -p screensense -- doctor --capture
+        run: cargo test --locked -j1 -p screensense-platform windows_fixture_capture_and_ocr -- --ignored --nocapture --test-threads=1
+
+      - name: Native Windows OCR from in-memory synthetic text (requires OCR language)
+        continue-on-error: true
+        run: cargo test --locked -j1 -p screensense-platform windows_synthetic_ocr -- --ignored --nocapture --test-threads=1
+
+      - name: Determine whether verified recovery payload has identical runtime source
+        id: runtime_payload
+        shell: pwsh
+        run: |
+          $base = '88eefc986c1b10f79f57da73302291a49cbbef38'
+          git fetch --no-tags --depth=1 origin $base
+          if ($LASTEXITCODE -ne 0) { throw 'Recovery source revision fetch failed' }
+          $changes = git diff --name-only $base HEAD -- Cargo.toml Cargo.lock rust-toolchain rust-toolchain.toml .cargo crates
+          if ($LASTEXITCODE -ne 0) { throw 'Recovery runtime identity check failed' }
+          if ($changes) {
+            'reused=false' >> $env:GITHUB_OUTPUT
+            "binary_commit=$((git rev-parse HEAD).Trim())" >> $env:GITHUB_ENV
+          } else {
+            'reused=true' >> $env:GITHUB_OUTPUT
+            "binary_commit=$base" >> $env:GITHUB_ENV
+          }
+
+      - name: Download verified identical-source recovery payload
+        if: steps.runtime_payload.outputs.reused == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $env:SCREENSENSE_PAYLOAD_ARCHIVE = Join-Path $env:RUNNER_TEMP 'previous-installer-payload.zip'
+          python -c "import os,subprocess; f=open(os.environ['SCREENSENSE_PAYLOAD_ARCHIVE'],'wb'); p=subprocess.run(['gh','api','repos/stevenke1981/screensense/actions/artifacts/11769281598/zip'],stdout=f); f.close(); p.check_returncode()"
+          if ($LASTEXITCODE -ne 0) { throw 'Recovery payload download failed' }
+          $digest = (Get-FileHash -LiteralPath $env:SCREENSENSE_PAYLOAD_ARCHIVE -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($digest -ne '9b77d38e3ff2371a2405916e3adc00cfd8eae00eed8ca58dbd0c8a268c4310b9') { throw 'Recovery artifact digest mismatch' }
+          Expand-Archive -LiteralPath $env:SCREENSENSE_PAYLOAD_ARCHIVE -DestinationPath "$env:RUNNER_TEMP/previous-installer-payload"
+
+      - name: Restore recovered executables and validate origin
+        if: steps.runtime_payload.outputs.reused == 'true'
+        shell: pwsh
+        run: |
+          $previous = Join-Path $env:RUNNER_TEMP 'previous-installer-payload'
+          $info = Get-Content -LiteralPath "$previous/BUILD-INFO.json" -Raw | ConvertFrom-Json
+          if ($info.commit -ne $env:binary_commit -or $info.profile -ne 'release + crt-static') { throw 'Recovery origin or profile mismatch' }
+          if ((Get-FileHash -LiteralPath "$previous/screensense.exe" -Algorithm SHA256).Hash.ToLowerInvariant() -ne '915ab3073ff7e4db1f20135eccb05f36621f9f242d59611956c8793359324b8b') { throw 'Recovery CLI hash mismatch' }
+          if ((Get-FileHash -LiteralPath "$previous/screensense-gui.exe" -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'aa736e56394c173cc8500cc2d19101723b4422a06c30732f7fa8270bed8ea8c0') { throw 'Recovery GUI hash mismatch' }
+          $binaries = 'target/installer/x86_64-pc-windows-msvc/release'
+          New-Item -ItemType Directory -Path $binaries -Force | Out-Null
+          Copy-Item -LiteralPath "$previous/screensense.exe","$previous/screensense-gui.exe" -Destination $binaries
+
+      - name: Build matching Windows installer and smoke payload (static CRT)
+        if: steps.runtime_payload.outputs.reused != 'true'
+        env:
+          CARGO_TARGET_DIR: target/installer
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: cargo build --release --locked -j1 --target x86_64-pc-windows-msvc -p screensense -p screensense-gui
+
+      - name: "Smoke: doctor (observation disabled)"
+        env:
+          SCREENSENSE_NO_SCREEN: "1"
+        run: target\installer\x86_64-pc-windows-msvc\release\screensense.exe doctor
 
       - name: "Smoke: config check"
-        run: cargo run --release -p screensense -- config check
+        run: target\installer\x86_64-pc-windows-msvc\release\screensense.exe config check
 
       # The script must at least parse, in PowerShell 7 and in Windows
       # PowerShell 5.1. This step fails the job if it does not.
       - name: "Smoke: shell-init powershell parses (PowerShell 7)"
         shell: pwsh
         run: |
-          $script = & target\release\screensense.exe shell-init powershell | Out-String
+          $script = & target\installer\x86_64-pc-windows-msvc\release\screensense.exe shell-init powershell | Out-String
           if ($LASTEXITCODE -ne 0) { throw "shell-init powershell exited with $LASTEXITCODE" }
           if ([string]::IsNullOrWhiteSpace($script)) { throw "shell-init powershell printed nothing" }
           [scriptblock]::Create($script) | Out-Null
@@ -137,21 +268,142 @@ jobs:
       - name: "Smoke: shell-init powershell parses (Windows PowerShell 5.1)"
         shell: powershell
         run: |
-          $script = & target\release\screensense.exe shell-init powershell | Out-String
+          $script = & target\installer\x86_64-pc-windows-msvc\release\screensense.exe shell-init powershell | Out-String
           if ($LASTEXITCODE -ne 0) { throw "shell-init powershell exited with $LASTEXITCODE" }
           if ([string]::IsNullOrWhiteSpace($script)) { throw "shell-init powershell printed nothing" }
           [scriptblock]::Create($script) | Out-Null
           Write-Host "parsed $($script.Length) characters"
 
+      - name: Verify release GUI payload with observation disabled
+        env:
+          SCREENSENSE_NO_SCREEN: "1"
+        # A release GUI uses the Windows subsystem; piping makes PowerShell wait for it.
+        run: |
+          target\installer\x86_64-pc-windows-msvc\release\screensense-gui.exe --verify-ui "$env:RUNNER_TEMP\gui-installer-payload" | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw "release GUI verification exited $LASTEXITCODE" }
+
+      - name: Collect original dependency notices and corresponding sources
+        shell: pwsh
+        run: |
+          $assets = Join-Path $env:RUNNER_TEMP 'installer-dependencies'
+          New-Item -ItemType Directory -Path $assets | Out-Null
+          cargo metadata --locked --format-version 1 --filter-platform x86_64-pc-windows-msvc > "$assets/metadata.json"
+          if ($LASTEXITCODE -ne 0) { throw 'Locked dependency metadata failed' }
+          python scripts/collect_licenses.py "$assets/metadata.json" "$assets/LICENSES"
+          if ($LASTEXITCODE -ne 0) { throw 'Original dependency notices collection failed' }
+          python scripts/collect_dependency_sources.py "$assets/metadata.json" "$assets/dependency-sources.zip"
+          if ($LASTEXITCODE -ne 0) { throw 'Corresponding dependency sources collection failed' }
+
+      - name: Prepare verified release payload and source for packaging recovery
+        shell: pwsh
+        run: |
+          $recovery = Join-Path $env:RUNNER_TEMP 'installer-payload'
+          New-Item -ItemType Directory -Path $recovery | Out-Null
+          Copy-Item -LiteralPath 'target/installer/x86_64-pc-windows-msvc/release/screensense.exe','target/installer/x86_64-pc-windows-msvc/release/screensense-gui.exe' -Destination $recovery
+          Copy-Item -LiteralPath 'crates/gui/LICENSE' -Destination "$recovery/LICENSE-GUI-GPL-3.0.txt"
+          Copy-Item -LiteralPath 'LICENSE' -Destination "$recovery/LICENSE-CORE-MIT.txt"
+          Copy-Item -LiteralPath 'THIRD-PARTY-NOTICES.md','packaging/windows/INSTALL-README.txt' -Destination $recovery
+          Copy-Item -LiteralPath "$env:RUNNER_TEMP/installer-dependencies/LICENSES" -Destination $recovery -Recurse
+          Copy-Item -LiteralPath "$env:RUNNER_TEMP/installer-dependencies/dependency-sources.zip" -Destination $recovery
+          git archive --format=tar --output="$recovery/source.tar" HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Recovery corresponding source archive failed' }
+          @{ commit=(git rev-parse HEAD).Trim(); binary_source_commit=$env:binary_commit; purpose='verified release payload for packaging recovery, not the installer'; profile='release + crt-static' } | ConvertTo-Json | Set-Content -LiteralPath "$recovery/BUILD-INFO.json" -Encoding utf8
+
+      - name: Verified release payload for packaging recovery
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer-payload
+          path: ${{ runner.temp }}/installer-payload/
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Compile the Inno Setup installer and separate fixture installers
+        shell: pwsh
+        run: |
+          $sha = (git rev-parse HEAD).Trim()
+          $compiler = 'C:/Program Files (x86)/Inno Setup 6/ISCC.exe'
+          $binaries = 'target/installer/x86_64-pc-windows-msvc/release'
+          $assets = Join-Path $env:RUNNER_TEMP 'installer-dependencies'
+          # The installer carries the version the CLI reports, never a stale default.
+          $version = ((& "$binaries/screensense.exe" --version) -replace '^screensense\s+','').Trim()
+          if ($LASTEXITCODE -ne 0 -or $version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw "Unexpected CLI version '$version'" }
+          ./scripts/package-windows.ps1 -BinaryDir $binaries -DependencyDir $assets -OutputDir "$env:RUNNER_TEMP/windows-installer" -ExpectedCommit $sha -BinaryCommit $env:binary_commit -InnoCompiler $compiler -Version $version -VersionNumber "$version.0"
+          $fixtureId = 'ScreenSense.fixture.'+[Guid]::NewGuid().ToString()
+          ./scripts/package-windows.ps1 -BinaryDir $binaries -DependencyDir $assets -OutputDir "$env:RUNNER_TEMP/installer-old" -ExpectedCommit $sha -BinaryCommit $env:binary_commit -InnoCompiler $compiler -AppIdentifier $fixtureId -Version '0.0.0-fixture' -VersionNumber '0.0.0.0'
+          ./scripts/package-windows.ps1 -BinaryDir $binaries -DependencyDir $assets -OutputDir "$env:RUNNER_TEMP/installer-upgrade" -ExpectedCommit $sha -BinaryCommit $env:binary_commit -InnoCompiler $compiler -AppIdentifier $fixtureId
+          @{ app_id=$fixtureId; commit=$sha } | ConvertTo-Json | Set-Content -LiteralPath "$env:RUNNER_TEMP/installer-fixture-identity.json" -Encoding utf8
+
+      - name: Test isolated per-user installation, upgrade and uninstall
+        shell: pwsh
+        run: |
+          $identity = Get-Content -LiteralPath "$env:RUNNER_TEMP/installer-fixture-identity.json" -Raw | ConvertFrom-Json
+          $old = (Get-ChildItem -LiteralPath "$env:RUNNER_TEMP/installer-old" -Filter '*.exe' -File).FullName
+          $upgrade = (Get-ChildItem -LiteralPath "$env:RUNNER_TEMP/installer-upgrade" -Filter '*.exe' -File).FullName
+          ./scripts/verify-windows-installer.ps1 -InitialInstaller $old -UpgradeInstaller $upgrade -OutputRoot "$env:RUNNER_TEMP/installer-tests" -FixtureAppId $identity.app_id -ExpectedCommit $identity.commit
+
+      - name: Windows Inno Setup installer, SHA256 and provenance
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: |
+            ${{ runner.temp }}/windows-installer/*.exe
+            ${{ runner.temp }}/windows-installer/*.sha256
+            ${{ runner.temp }}/windows-installer/*.build.json
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Separate fixture installers for repeatable upgrade testing
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer-fixtures
+          path: |
+            ${{ runner.temp }}/installer-old/*.exe
+            ${{ runner.temp }}/installer-old/*.sha256
+            ${{ runner.temp }}/installer-old/*.build.json
+            ${{ runner.temp }}/installer-upgrade/*.exe
+            ${{ runner.temp }}/installer-upgrade/*.sha256
+            ${{ runner.temp }}/installer-upgrade/*.build.json
+            ${{ runner.temp }}/installer-fixture-identity.json
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Isolated installer verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer-verification
+          path: |
+            ${{ runner.temp }}/gui-installer-payload/verification.json
+            ${{ runner.temp }}/gui-installer-payload/*.png
+            ${{ runner.temp }}/installer-tests/**/installer-verification.json
+            ${{ runner.temp }}/installer-tests/**/*.log
+            ${{ runner.temp }}/installer-tests/**/gui-check/verification.json
+          retention-days: 14
+          if-no-files-found: warn
+
   msrv:
-    name: MSRV (Rust 1.89)
+    name: MSRV (Rust 1.89; GUI 1.92)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Test the exact candidate SHA rather than GitHub's synthetic PR merge.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Install GUI font build dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfontconfig1-dev
 
       - uses: dtolnay/rust-toolchain@1.89
 
+      - uses: dtolnay/rust-toolchain@1.92
+
       - uses: Swatinem/rust-cache@v2
 
-      - name: Check
-        run: cargo check --workspace --all-targets
+      # Slint 1.18 (system tray) needs Rust 1.92, so the GUI has its own floor.
+      - name: Check (Rust 1.89, everything but the GUI)
+        run: cargo +1.89 check --workspace --all-targets --locked -j1 --exclude screensense-gui
+
+      - name: Check the GUI (Rust 1.92)
+        run: cargo +1.92 check -p screensense-gui --all-targets --locked -j1

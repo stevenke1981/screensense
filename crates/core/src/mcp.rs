@@ -149,14 +149,8 @@ pub fn tool_definitions(_lang: Lang) -> Value {
         ),
         tool(
             "screen_pause",
-            "Stop recording the screen for a while. Use it when the user asks for privacy or is about to show something sensitive. Recording resumes by itself after the time is up, or when screen_resume is called.",
+            "Stop recording the screen for a while. Use it when the user asks for privacy or is about to show something sensitive. Recording resumes after the time is up. Only the user can resume sooner with screensense resume.",
             json!({"minutes": minutes_prop(30, "How long to pause, in minutes.")}),
-            &[],
-        ),
-        tool(
-            "screen_resume",
-            "Resume screen recording after screen_pause. Only call it when the user asks for recording to continue.",
-            json!({}),
             &[],
         ),
     ])
@@ -246,6 +240,9 @@ fn call_tool(ctx: &Ctx, params: Option<&Value>) -> Result<Value, RpcError> {
     };
     // Unknown tool names are protocol errors (-32602), as the MCP spec says; the name is
     // not echoed back.
+    if name != "screen_pause" && !ctx.privacy.is_usable() {
+        return Ok(text_result("Configuration or privacy rules are not usable; history output is blocked. Run screensense config check.".into(), true));
+    }
     let text = match name {
         "screen_now" => digest::build(ctx, Mode::Full).unwrap_or_else(|| {
             "No screen context is available: the screen sensor is not running and no recent shell errors were recorded (or the digest is switched off in the configuration). Start the sensor with: screensense daemon start".to_string()
@@ -272,22 +269,16 @@ fn call_tool(ctx: &Ctx, params: Option<&Value>) -> Result<Value, RpcError> {
         "screen_pause" => {
             let minutes = minutes_arg(args, 30.0)?;
             let until = ctx.now + minutes * 60.0;
-            return Ok(match ctx.store.set_paused_until(Some(until)) {
-                Ok(()) => text_result(
+            return Ok(match ctx.store.extend_paused_until(until) {
+                Ok(until) => text_result(
                     format!(
-                        "Recording paused until {} ({} min). Call screen_resume to continue sooner.",
+                        "Recording paused until {} ({} min). The user can run screensense resume to continue sooner.",
                         digest::clock_time(ctx, until),
-                        minutes.floor() as u64
+                        ((until - ctx.now) / 60.0).max(0.0).floor() as u64
                     ),
                     false,
                 ),
                 Err(_) => text_result("Could not save the pause request to the database.".into(), true),
-            });
-        }
-        "screen_resume" => {
-            return Ok(match ctx.store.set_paused_until(None) {
-                Ok(()) => text_result("Recording resumed.".into(), false),
-                Err(_) => text_result("Could not save the resume request to the database.".into(), true),
             });
         }
         _ => return Err(invalid_params("unknown tool")),
@@ -614,11 +605,11 @@ mod tests {
     // ---- tools/list ----
 
     #[test]
-    fn tools_list_has_eight_well_formed_tools() {
+    fn tools_list_has_seven_well_formed_tools() {
         let e = env();
         let r = e.send(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#);
         let tools = r["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 8);
+        assert_eq!(tools.len(), 7);
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert_eq!(
             names,
@@ -630,7 +621,6 @@ mod tests {
                 "screen_text",
                 "screen_commands",
                 "screen_pause",
-                "screen_resume"
             ]
         );
         for t in tools {
@@ -679,7 +669,6 @@ mod tests {
             "screen_text",
             "screen_commands",
             "screen_pause",
-            "screen_resume",
         ] {
             let r = e.call(name, json!({}));
             assert_eq!(r["result"]["isError"], false, "{name}: {r}");
@@ -687,10 +676,10 @@ mod tests {
         }
         // `arguments` may be absent or null.
         let r = e.send(
-            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"screen_resume"}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"screen_now"}}"#,
         );
         assert_eq!(r["result"]["isError"], false);
-        let r = e.send(r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"screen_resume","arguments":null}}"#);
+        let r = e.send(r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"screen_now","arguments":null}}"#);
         assert_eq!(r["result"]["isError"], false);
         // screen_search needs a query.
         let r = e.call("screen_search", json!({}));
@@ -827,8 +816,26 @@ mod tests {
         }
         // Extra, unknown arguments are ignored.
         assert_eq!(
-            e.call("screen_resume", json!({"whatever": 1}))["result"]["isError"],
+            e.call("screen_now", json!({"whatever": 1}))["result"]["isError"],
             false
+        );
+    }
+
+    #[test]
+    fn release_regression_agent_pause_cannot_shorten_user_pause() {
+        let e = env();
+        e.store.set_paused_until(Some(NOW + 60.0 * 60.0)).unwrap();
+        let r = e.call("screen_pause", json!({"minutes": 1}));
+        assert_eq!(r["result"]["isError"], false);
+        assert_eq!(
+            e.store.control().unwrap().paused_until,
+            Some(NOW + 60.0 * 60.0)
+        );
+        assert!(text_of(&r).contains("60 min"), "{}", text_of(&r));
+        e.call("screen_pause", json!({"minutes": 90}));
+        assert_eq!(
+            e.store.control().unwrap().paused_until,
+            Some(NOW + 90.0 * 60.0)
         );
     }
 
@@ -852,7 +859,7 @@ mod tests {
         );
         // String minutes and clamping.
         e.call("screen_pause", json!({"minutes": "5"}));
-        assert_eq!(e.store.control().unwrap().paused_until, Some(NOW + 300.0));
+        assert_eq!(e.store.control().unwrap().paused_until, Some(NOW + 1800.0));
         e.call("screen_pause", json!({"minutes": 1_000_000}));
         assert_eq!(
             e.store.control().unwrap().paused_until,
@@ -862,9 +869,12 @@ mod tests {
         e.alive();
         assert!(text_of(&e.call("screen_now", json!({}))).contains("Recording paused until"));
         let r = e.call("screen_resume", json!({}));
-        assert_eq!(r["result"]["isError"], false);
-        assert_eq!(e.store.control().unwrap().paused_until, None);
-        assert!(!text_of(&e.call("screen_now", json!({}))).contains("Recording paused"));
+        assert_eq!(code_of(&r), -32602);
+        assert_eq!(
+            e.store.control().unwrap().paused_until,
+            Some(NOW + MAX_MINUTES * 60.0)
+        );
+        assert!(text_of(&e.call("screen_now", json!({}))).contains("Recording paused"));
     }
 
     #[test]
@@ -1099,7 +1109,7 @@ mod tests {
             &handle_message(&c, r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#).unwrap(),
         )
         .unwrap();
-        assert_eq!(r["result"]["tools"].as_array().unwrap().len(), 8);
+        assert_eq!(r["result"]["tools"].as_array().unwrap().len(), 7);
         // Tool output follows the language.
         let r: Value = serde_json::from_str(
             &handle_message(

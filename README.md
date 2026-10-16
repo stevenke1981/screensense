@@ -2,14 +2,16 @@
 
 English | [繁體中文](README.zh-TW.md)
 
-ScreenSense is a small background program that notices which window you are working in and what text is on it, keeps a short, privacy-filtered history in a local SQLite file, and hands a compact summary to AI coding agents. The agent gets it with every prompt through a hook, or asks for it through an MCP server. It is one Rust binary, `screensense`, and it works with OpenCode, Claude Code, Codex CLI, Gemini CLI and anything else that speaks MCP.
+ScreenSense is an opt-in local screen context tool. It identifies the foreground window and visible text, keeps a short, privacy-filtered history in local SQLite, and provides a compact summary to AI coding agents through a hook or MCP. The CLI is the Rust binary `screensense`; `screensense-gui` is an optional compact Slint window with a notification-area icon. The CLI works with OpenCode, Claude Code, Codex CLI, Gemini CLI, and other MCP clients.
 
-> **Status: v0.1.0, early. Please read before installing.**
+From v0.2.0 the Windows release also has a per-user Inno Setup installer with both programs; the ZIP and Linux archives contain the CLI. The v0.1.0 CLI exposes seven MCP tools and has no `screen_resume` tool; resume is available only through the user CLI.
+
+> **Status: v0.1.0. Read the limits before enabling capture.**
 >
-> - **Linux / X11**: tests in this repository run the real daemon against a real X server in a virtual display (Xvfb). They check that a window is tracked, captured, read by OCR and stored (a window span, a frame with its image, an error row), that the daemon stops cleanly, and that `doctor --capture` captures an ordinary window but not one the privacy rules hide. The digest, MCP and CLI views are tested against stores the tests fill themselves, not against rows an Xvfb daemon wrote.
-> - **Windows**: the backend (window capture, Windows OCR, private-browsing detection, toast notifications) is type-checked and linted for the Windows target, but **has not been run on real hardware by the author** at release time. If you try it, run `screensense doctor --capture` first and please report what you see. The open assumptions are listed in [docs/WINDOWS-VERIFICATION.md](docs/WINDOWS-VERIFICATION.md). The CI workflow is configured to build, test and smoke-test it on a Windows runner; no CI run has happened yet.
-> - **PowerShell shell integration**: untested. CI is configured to check that the generated script parses in PowerShell 7 and Windows PowerShell 5.1, which is not the same as running it.
-> - **macOS and Wayland**: not supported. On Wayland the daemon runs without window observation; the shell integration and the MCP server still work.
+> - **Linux / X11:** the daemon, capture, OCR, storage, stop and `doctor --capture` paths pass an Xvfb end-to-end run. Digest, MCP and CLI views have separate store-backed tests.
+> - **Windows 10/11 x64:** CI and local suites pass. A local synthetic, nonactivating window fixture captured and OCR-read seven expected words (892x212); the GitHub Windows runner also passed its synthetic fixture (900x220). A separate memory-only OCR test passed. These fixtures do not establish compatibility with ordinary applications, private-browser detection, notifications, or a live agent session. See [docs/WINDOWS-VERIFICATION.md](docs/WINDOWS-VERIFICATION.md).
+> - **PowerShell:** generated shell-init text parsed under Windows PowerShell 5.1 and PowerShell 7. Actual profile installation and command hooks were not exercised.
+> - **Wayland and macOS:** screen observation is unsupported. The Linux/X11 backend needs an X11 session; macOS has no observation backend.
 
 ## How it works
 
@@ -18,7 +20,7 @@ ScreenSense is a small background program that notices which window you are work
 3. When the picture changed (or every 3 minutes regardless), OCR reads the text. Text that looks like a secret drops the frame; e-mail addresses, phone numbers and similar are masked in the text and, if images are kept, blacked out in the image. **Without an OCR engine nothing is captured**: windows are still listed in the timeline, but no screen text and no image is stored.
 4. The result goes into `screensense.db` (SQLite, full-text searchable). Error lines are detected, de-duplicated and scored.
 5. `screensense hook` (called by your agent on each prompt) or the `screen_*` MCP tools turn that history into a short fenced block of text. Within one conversation the hook sends the full block first and afterwards only what changed since the previous prompt, and nothing at all when nothing changed. A full block is sent again after 30 minutes, or when the prompt talks about the screen ("this error", "screenshot", "畫面"...).
-6. Old data is deleted on a schedule (hourly while the daemon runs), and tightening a privacy rule deletes the history that matches it: when the daemon starts, within about 10 seconds of a config change, and on `screensense purge`.
+6. Old data is deleted on a schedule (hourly while the daemon runs). Tightened rules trigger a retroactive purge at daemon start and after a config change (about every 2 seconds), or when you run `screensense purge`.
 
 What the agent receives looks like this:
 
@@ -43,7 +45,9 @@ With `language = "zh"` in the config file or `--lang zh`, the digest is written 
 
 ## Install
 
-No release exists until the first version tag is pushed; until then, build from source.
+Find the v0.1.0 archives and checksums at [Releases](https://github.com/stevenke1981/screensense/releases). The Windows archive is unsigned.
+
+**Windows runtime:** the optimized x64 executable imports `VCRUNTIME140.dll`. If it is missing, install Microsoft Visual C++ v14 x64 Redistributable ([official download](https://aka.ms/vc14/vc_redist.x64.exe), [supported versions](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170)). The archive was smoke-tested after fresh extraction on the build host, not on a clean Windows installation.
 
 **Windows 10/11 (x64).** Download `screensense-x86_64-pc-windows-msvc.zip` from [Releases](https://github.com/stevenke1981/screensense/releases), unzip it into a directory on your `PATH`. Or run [`install.ps1`](install.ps1), which downloads the latest release, verifies its SHA-256, unpacks it to `%LOCALAPPDATA%\Programs\screensense` and adds that to your user `PATH`. Text recognition uses the OCR built into Windows and needs an installed language that has OCR support.
 
@@ -52,26 +56,43 @@ No release exists until the first version tag is pushed; until then, build from 
 **From source** (Rust 1.89 or newer and a C compiler, for the bundled SQLite):
 
 ```
-cargo install --git https://github.com/stevenke1981/screensense screensense
+cargo install --git https://github.com/stevenke1981/screensense --tag v0.1.0 --locked -j1 screensense
 ```
 
 Neither install script starts the daemon, edits an AI tool's configuration or enables autostart. Those are the explicit steps below.
 
+## Optional desktop GUI
+
+The source tree includes an optional Slint desktop control window (a small window that minimises to the notification area; see [docs/GUI.md](docs/GUI.md)). The Windows installer contains it. Build and open it from source with Rust 1.92 or newer:
+
+```sh
+cargo run --locked -j1 -p screensense-gui
+# Use English instead of the default Traditional Chinese:
+cargo run --locked -j1 -p screensense-gui -- --lang en
+```
+
+Opening the GUI accesses local configuration and opens the local store; it does not start the daemon, capture the screen, call an analyzer, or manage network connections. The five pages show status, real history counts, platform/configuration capabilities, editable TOML preferences, read-only diagnostics, and confirmed cleanup actions. The GUI does not display stored screen-history text. Invalid configuration blocks capture and analysis and hides counts.
+
+If stored history was recorded under different privacy rules, the GUI marks cleanup pending, hides the history counts and cached sensor notes, and keeps daemon/pause/stop status visible. Refreshing the GUI does not delete data. The Stored data page's **Review cleanup** action opens an explicit confirmation naming conflicting history and all stored analysis results for permanent deletion; confirming it preserves pause and stop controls. A language-only save does not clear history or insights. A save that changes privacy rules performs cleanup only after the validated config has been atomically replaced and the save consequences confirmed. If the previous TOML cannot be parsed, saving does not infer a privacy change or delete data; review cleanup separately afterward.
+
+A saved configuration can affect an already-running daemon. Clearing pause can let an already-running daemon continue according to its configuration; the GUI never starts a daemon. CI run 38288020182 passed Linux GUI/end-to-end and Confirm-save checks, Rust 1.89 MSRV, Windows clippy/tests/software GUI checks, and the static-CRT CLI/GUI build and GUI verification. The Windows job failed only at dependency license collection (`accesskit` notice missing). A target-filtered collector fix passed local checks against 395 locked Windows dependency packages. Use the matching candidate CI run and installer verification report to confirm Inno compilation and isolated installer acceptance. See [docs/GUI.md](docs/GUI.md), [docs/GUI-DESIGN.md](docs/GUI-DESIGN.md), [docs/WINDOWS-INSTALLER.md](docs/WINDOWS-INSTALLER.md), and [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). The GUI crate is GPL-3.0-only; the existing CLI, core, and platform crates remain MIT licensed.
 ## Quick start
 
+Start with read-only checks. These commands do not capture the screen or start a daemon:
+
 ```
-screensense doctor --capture   # what works on this machine: platform, capture, OCR
-screensense daemon start       # start recording in the background
-screensense setup              # connect every AI tool found on this machine
-screensense autostart on       # optional: start the daemon when you sign in
-screensense status             # running? (exit code 3 when it is not)
+screensense --help
+screensense config path
+screensense config show
+screensense config check
+screensense doctor
 ```
 
-`doctor --capture` grabs the foreground window once and runs OCR on it, then prints how the privacy rules classify it ("recorded as: full / title only / hidden, because ..."), the capture size and time, the OCR time and the number of lines and words found, and up to three recognised lines (soft hits already masked). It stores nothing. The window's title is printed only when the window would be recorded in full; otherwise you see `(hidden by privacy rules)`, and no capture is made. The application name is always printed. If the recognised text trips the content checks, it is not shown at all. The report is meant to be pasted into a bug report, so check it first anyway.
+Review the configuration and privacy limits before opting in. `doctor --capture` performs a real foreground-window capture and OCR without storing the result. To start continuous recording, explicitly run `screensense daemon start`; connect an agent separately with `screensense setup <tool>`. Autostart and shell-profile integration are separate optional steps described below.
 
 The daemon writes its log to `daemon.log` in the data directory (see `screensense config path`) when started with `daemon start`; `daemon run` writes to the terminal, and a daemon started by `autostart` is not given the log file. The log holds start and stop events, counts, durations and error kinds. It never contains window titles, screen text or commands. A log larger than 1 MiB is moved to `daemon.log.1` the next time `daemon start` runs.
 
-The optional shell integration reports each command with its exit code, directory and duration. Add one line to your shell's startup file:
+The optional shell integration reports each command with its exit code, directory and duration. `shell-init` output parses in Windows PowerShell 5.1 and PowerShell 7; actual profile installation and hooks have not been exercised. Add the line for your shell to its startup file only if you want command recording:
 
 | Shell | File | Line |
 |---|---|---|
@@ -143,7 +164,7 @@ Global options: `--data-dir <DIR>`, `--config <FILE>`, `--lang <en|zh>`. `screen
 | `mcp` | The stdio MCP server |
 | `setup [claude\|codex\|gemini\|opencode…] [--remove] [--print]` | Connect or disconnect AI tools; no name means every tool found |
 | `shell-init [bash\|zsh\|fish\|powershell]` | Print the shell integration snippet (no argument: how to enable each; unknown shell: exit code 2) |
-| `pause [MIN]` / `resume` | Stop and continue recording (default 60 minutes) |
+| `pause [MIN]` / `resume` | Stop and continue recording (default 60 minutes); only the CLI `resume` ends a pause early |
 | `purge [--all] [--yes]` | Re-check history against the current privacy rules and delete what no longer qualifies. `--all` deletes all history instead; it asks you to type `yes`, and without a terminal it refuses unless `--yes` is given |
 | `sweep` | Apply the retention limits now |
 | `analyze` / `insights [N]` | Run the local-model analysis once; show the latest N insights (default 5) |
@@ -165,10 +186,19 @@ JSON-RPC 2.0 over stdio, MCP protocol `2025-06-18` (also `2025-03-26` and `2024-
 | `screen_search` | `query` (required), `minutes` (1440), `limit` (8) | Matching frames with snippets; substring match, works for CJK |
 | `screen_text` | `frame_id` (latest), `max_chars` (4000, 200–20000) | Redacted text of one frame |
 | `screen_commands` | `minutes` (60), `limit` (30) | Shell commands with exit code, directory, duration |
-| `screen_pause` | `minutes` (30) | Stops recording for that long |
-| `screen_resume` | none | Resumes recording |
+| `screen_pause` | `minutes` (30) | Stops recording for at least that long; later requests can only extend the deadline |
 
-Every result that contains screen-derived text is fenced like the digest. The MCP server reads the configuration once, when it starts.
+There are seven MCP tools. MCP can request or extend a pause, but cannot resume early; only the user can run `screensense resume`. Each MCP request reloads the config and purges under current rules before returning data.
+
+Every result that contains screen-derived text is fenced like the digest. `stream` reloads config about once per second, fails closed while config or purge is invalid, and does not replay events from a blocked interval after recovery.
+
+## Typical workflows
+
+- **Check a build failure:** inspect the latest digest or `screensense errors` to see the recent window timeline and recognized error lines.
+- **Search a known message:** use `screensense search <text>` or MCP `screen_search` to retrieve matching, redacted snippets.
+- **Bridge a test window to an agent:** start ScreenSense explicitly, then let an MCP client request local context when needed. Treat returned screen text as untrusted data.
+- **Pause and clear local history:** run `screensense pause`, then `screensense purge --all` when you want to remove stored history. The pause/stop controls and sensitive marks persist. Purge does not resume capture: if it was paused or stopped, it stays that way; otherwise a running daemon may continue recording.
+- **Opt into local analysis:** configure a local model and enable the analyzer only after reviewing its data flow; it is off by default.
 
 ## Privacy
 
@@ -177,19 +207,19 @@ Full details and limits: [docs/PRIVACY.md](docs/PRIVACY.md).
 - **Three tiers.** *Full*: title, text and image. *Title only*: never captured (chat, mail, calls, games, remote desktop, the AI tool's own window). *Hidden*: app name only (password managers, wallets, private browsing, titles that mention banking, medical records, secret files).
 - **Never captured**: windows in the title-only and hidden tiers, and browser windows whose private-mode state cannot be determined (the default; this is every browser window on Linux/X11).
 - **Hard redaction**: if the recognised text contains an API key or token, a private key, a JWT, a card number that passes Luhn, a Taiwan national ID that passes its checksum, or two sensitive keywords, the whole frame is dropped (nothing is stored for that look) and that window (application and title) is treated as hidden from then on, also after a restart. Its stored frames and errors are deleted.
-- **Soft redaction**: e-mail addresses, phone numbers, database URLs and `--password`-style flags are masked in the text **and** blacked out in the image, using the OCR word boxes. Only text the OCR recognised can be masked.
+- **Soft redaction**: e-mail addresses, phone numbers, database URLs and `--password`-style flags are masked in the text **and** blacked out in the image, using OCR word boxes. Only recognized text can be masked. Before returning stored data, current rules are applied again; if an old JPEG matches a current soft mask, it is deleted and its path is not returned.
 - **Too little text**: a frame with fewer than 20 characters of recognised text (counted after masking; every character counts the same, line breaks included) is dropped, because there is not enough to verify it is safe.
-- **Retroactive purge**: when your rules change, stored history is re-checked and what would no longer be recorded is deleted from disk. This happens when the daemon starts, within about 10 seconds of a change to the config file while it runs, and when you run `screensense purge`.
+- **Retroactive purge**: when your rules change, stored history is re-checked and what would no longer be recorded is deleted from disk; derived analyzer insights are also cleared. This happens when the daemon starts, after a config change (the daemon checks about every 2 seconds), and when you run `screensense purge`. Read paths including `now`, `shot`, hooks, MCP and analyzer output purge first; an old JPEG that now matches a soft mask is removed and its path is not returned.
 - **Retention defaults**: images 6 hours and at most 300 MB; frame text 7 days; window timeline, commands and errors 30 days; insights 90 days.
-- **Pause** with `screensense pause [MIN]`; delete all history with `screensense purge --all`, which keeps your settings, the stored rules hash and the list of windows marked sensitive. Your own rules are **additive**: nothing in the config file can switch a built-in rule off.
+- **Pause** with `screensense pause [MIN]`; only `screensense resume` ends it early. `screensense purge --all` deletes history but keeps settings, control pause/stop requests, the stored rules hash and sensitive-window marks. Your own rules are **additive**: nothing in the config file can switch a built-in rule off.
 
 ## Security model and limits
 
 Reporting and the full threat model: [SECURITY.md](SECURITY.md).
 
 - **Prompt injection through on-screen text is reduced, not eliminated.** Screen text is sanitised, wrapped in a fence with a random per-call marker and introduced as "data, not instructions". A model can still be influenced by it. Review what your agent proposes to do.
-- **The database and images are not encrypted.** They are protected by the permissions of your user profile directory; any process running as you can read them.
-- **Detection is best effort.** Sensitive windows are recognised by name and title, secrets by pattern, and both depend on OCR accuracy. A secret the OCR misreads is neither detected nor masked.
+- **The database and images are not encrypted.** They are protected by the permissions of your user profile directory; any process running as you can read them. SQLite secure-delete, FTS and WAL cleanup are best effort, not forensic erasure from SSDs or backups.
+- **Detection is best effort.** Sensitive windows are recognised by name and title, secrets by pattern, and both depend on OCR accuracy. A secret the OCR misreads is neither detected nor masked. Sensitive-window marks persist without expiry or a UI clear operation.
 - **ScreenSense never executes commands** and makes **no network connection**, with one exception: if you enable the analyzer, it talks to the local model server you configured (loopback only unless `allow_remote` is set). It does call the external programs `tesseract` (Linux, for OCR) and `notify-send` (Linux, if installed, for notifications).
 - The digest itself goes wherever your AI tool sends its prompts.
 
@@ -221,15 +251,15 @@ hidden_title_regex = ["ClientName", "payroll"]   # app name only
 title_only_apps = ["MyGame.exe"]                 # never captured
 ```
 
-The running daemon looks at the config file about every 10 seconds. When it has changed, the new settings and privacy rules apply without a restart, and history the new rules forbid is deleted. The OCR engine is chosen when the daemon starts: after changing `capture.ocr` or `capture.ocr_language`, run `screensense daemon restart`. Each hook call reads the file afresh; a running MCP server does not.
+The daemon checks config about every 2 seconds. Invalid TOML or privacy regexes block recording and history reads; diagnostic commands may show defaults for explanation, but this is not an active fallback. Changing OCR settings still requires `screensense daemon restart`. Hooks and each MCP request reload config and purge under current rules before returning data.
 
-Every key, default and range: [docs/CONFIG.md](docs/CONFIG.md). A file that does not parse is ignored as a whole (defaults apply) and reported by `screensense status`, `doctor` and `config check`; unknown keys are errors.
+Every key, default and range: [docs/CONFIG.md](docs/CONFIG.md). Invalid TOML or privacy regexes block recording and history output; diagnostics may show defaults only as explanatory values. `screensense status`, `doctor` and `config check` report config errors; unknown keys are errors.
 
 ## Platform support
 
 | Platform | State |
 |---|---|
-| Windows 10/11 x64 | Implemented; type-checked and linted for the Windows target; CI is configured to build and test it; **not yet run on real hardware by the author**. See [docs/WINDOWS-VERIFICATION.md](docs/WINDOWS-VERIFICATION.md). |
+| Windows 10/11 x64 | CI and local tests pass. A synthetic owned-window capture/OCR fixture and memory-only OCR pass; ordinary apps, private-browser detection, notifications and live agent integration remain unverified. See [docs/WINDOWS-VERIFICATION.md](docs/WINDOWS-VERIFICATION.md). |
 | Linux, X11 session | Tested in Xvfb by tests in this repository. Needs `tesseract` for OCR and `DISPLAY` in the daemon's environment. Browser private mode cannot be detected, so browsers are title-only by default. |
 | Linux, Wayland session | No window observation. With XWayland, only XWayland windows are seen. The shell integration and MCP server work. |
 | macOS | Not supported. |
@@ -253,7 +283,7 @@ xvfb-run -a -s "-screen 0 1280x800x24" \
     cargo test -p screensense --test cli x11:: -- --nocapture --test-threads=1
 ```
 
-The CI workflow in `.github/workflows/ci.yml` is configured to run the commands above on Linux (plus a format check), to run clippy and the tests and a few smoke steps on Windows, and to check the minimum Rust version. It has not run yet.
+The CI workflow in `.github/workflows/ci.yml` passed on runtime-review candidate `b0b01e715cb9e07b64c6f1f85ade40242f574e45`: Linux format, clippy, tests and Xvfb end-to-end; Windows clippy, tests and smoke checks; and the minimum Rust version check. The final release commit must pass its own CI and archive checks.
 
 ## How it differs from desktop-sense
 
