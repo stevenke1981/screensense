@@ -295,12 +295,12 @@ fn exercise(ui: &AppWindow, service: &mut Service, output: &Path) -> Result<()> 
 fn verify_small_window(ui: &AppWindow, output: &Path) -> Result<()> {
     let size = ui.window().size();
     let scale = ui.window().scale_factor();
-    if (size.width as f32 / scale - 1024.0).abs() > 1.0
-        || (size.height as f32 / scale - 600.0).abs() > 1.0
+    if (size.width as f32 / scale - 360.0).abs() > 1.0
+        || (size.height as f32 / scale - 560.0).abs() > 1.0
     {
-        bail!("native resize did not reach 1024x600 logical pixels");
+        bail!("native resize did not reach 360x560 logical pixels");
     }
-    screenshot(ui, &output.join("07-overview-1024x600.png"))
+    screenshot(ui, &output.join("07-overview-360x560.png"))
 }
 
 type NativeResult = Arc<Mutex<Option<Result<()>>>>;
@@ -331,7 +331,7 @@ pub fn run(output: &Path, native: bool) -> Result<()> {
     let ui = AppWindow::new()?;
     #[cfg(windows)]
     ui.set_font_family("Microsoft JhengHei UI".into());
-    ui.window().set_size(slint::LogicalSize::new(1100.0, 760.0));
+    ui.window().set_size(slint::LogicalSize::new(400.0, 660.0));
     apply_snapshot(&ui, &service.snapshot(true)?, true);
     ui.set_busy(false);
     ui.set_message("隔離合成資料驗證 / Isolated synthetic fixture".into());
@@ -351,7 +351,7 @@ pub fn run(output: &Path, native: bool) -> Result<()> {
                     .ok_or_else(|| anyhow::anyhow!("window closed before verification"))
                     .and_then(|ui| {
                         exercise(&ui, &mut service, &folder)?;
-                        ui.window().set_size(slint::LogicalSize::new(1024.0, 600.0));
+                        ui.window().set_size(slint::LogicalSize::new(360.0, 560.0));
                         Ok(())
                     });
                 if let Err(error) = check {
@@ -383,7 +383,7 @@ pub fn run(output: &Path, native: bool) -> Result<()> {
         completed
     } else {
         exercise(&ui, &mut service, &output).and_then(|()| {
-            ui.window().set_size(slint::LogicalSize::new(1024.0, 600.0));
+            ui.window().set_size(slint::LogicalSize::new(360.0, 560.0));
             verify_small_window(&ui, &output)
         })
     };
@@ -392,7 +392,7 @@ pub fn run(output: &Path, native: bool) -> Result<()> {
     let report = serde_json::json!({"result":"passed","renderer":"Slint software","native_window":native,
         "interaction":"internal action dispatcher + Slint key events; not physical mouse/keyboard",
         "screen_observation":"disabled","model_requests":false,"daemon_started":false,
-        "checks":["real rendered Chinese/English views","60 then 5 minute pause retains deadline","stale asynchronous result rejected","pending policy hides history without deleting it","cleanup requires confirmation","accessible editor changes enable Save; restoring baseline clears dirty state","saved reply preserves newer unsaved draft","periodic refresh preserves user-transferred editor focus after Save Cancel","successful confirmed Save preserves both next editor characters","Enter does not confirm deletion","Tab and Shift+Tab then Escape cancel deletion","cancel returns keyboard focus to initiating action","invalid regex clears data view","save repaired configuration","wipe preserves pause and stop","1024x600 rendering"]});
+        "checks":["real rendered Chinese/English views","60 then 5 minute pause retains deadline","stale asynchronous result rejected","pending policy hides history without deleting it","cleanup requires confirmation","accessible editor changes enable Save; restoring baseline clears dirty state","saved reply preserves newer unsaved draft","periodic refresh preserves user-transferred editor focus after Save Cancel","successful confirmed Save preserves both next editor characters","Enter does not confirm deletion","Tab and Shift+Tab then Escape cancel deletion","cancel returns keyboard focus to initiating action","invalid regex clears data view","save repaired configuration","wipe preserves pause and stop","360x560 rendering"]});
     fs::write(
         output.join("verification.json"),
         serde_json::to_vec_pretty(&report)?,

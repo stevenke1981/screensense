@@ -1,130 +1,394 @@
-import { TextEdit, ScrollView } from "std-widgets.slint";
+// ScreenSense desktop controls: a compact window and a tray icon.
+//
+// The window draws its own title bar (no native frame) so it can stay small. The
+// minimise button sends it to the notification area; the tray icon brings it back.
+// Data and actions come from Rust (`service.rs`); this file only presents them.
+
+import { TextEdit, ScrollView, Palette } from "std-widgets.slint";
+
+export { Palette }
 
 global Theme {
-    out property<color> ink: #2e3436;
-    out property<color> muted: #64676b;
-    out property<color> line: #deddda;
-    out property<color> accent: #3584e4;
-    out property<color> action: #1c71d8;
+    out property <bool> dark: Palette.color-scheme == ColorScheme.dark;
+
+    out property <color> bg: dark ? #0f1117 : #f4f5f9;
+    out property <color> surface: dark ? #181b24 : #ffffff;
+    out property <color> surface-alt: dark ? #20242f : #eceef4;
+    out property <color> hover: dark ? #2a2f3c : #e2e5ee;
+    out property <color> line: dark ? #2b303d : #dfe2ea;
+    out property <color> line-soft: dark ? #232733 : #eef0f4;
+    out property <color> ink: dark ? #e7e9ee : #141821;
+    out property <color> muted: dark ? #9aa1b0 : #5b6272;
+    out property <color> accent: #4f46e5;
+    out property <color> accent-hover: #4338ca;
+    out property <color> accent-soft: dark ? #2a2a5a : #e8e7fd;
+    out property <color> on-accent: #ffffff;
+    out property <color> success: dark ? #34d399 : #059669;
+    out property <color> warning: dark ? #fbbf24 : #b45309;
+    out property <color> warning-soft: dark ? #3a2f15 : #fff4dc;
+    out property <color> danger: dark ? #f87171 : #c01c28;
+    out property <color> danger-solid: #c01c28;
+    out property <color> danger-soft: dark ? #3a1f24 : #fbe9e9;
+    out property <color> focus: dark ? #a5b4fc : #4f46e5;
+    out property <color> scrim: dark ? #000000a0 : #0f172a66;
+
+    out property <length> radius-s: 6px;
+    out property <length> radius-m: 10px;
+    out property <length> radius-l: 14px;
+    out property <length> pad: 14px;
+
+    out property <length> font-caption: 11px;
+    out property <length> font-small: 12px;
+    out property <length> font-body: 13px;
+    out property <length> font-title: 15px;
 }
 
-component Action inherits Rectangle {
-    in property<string> text;
-    in property<bool> suggested: false;
-    in property<bool> destructive: false;
-    in property<bool> enabled: true;
-    in property<bool> restore-focus: false;
-    forward-focus: focus;
-    callback focus-restored();
-    changed restore-focus => { if(root.restore-focus && root.enabled) { focus.focus(); root.focus-restored(); } }
-    changed enabled => { if(root.restore-focus && root.enabled) { focus.focus(); root.focus-restored(); } }
+// A square icon-only button (title bar).
+component IconButton inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    in property <bool> active: false;
+    in property <bool> enabled: true;
+    in property <color> hover-color: Theme.hover;
+    in property <color> hover-icon-color: Theme.ink;
     callback clicked();
-    min-width: 104px; preferred-width: max(104px, label.preferred-width + 28px);
-    horizontal-stretch: 0; height: 36px;
-    border-radius: 6px;
-    background: !root.enabled ? #f1f1f1 : root.destructive ? #c01c28 : root.suggested ? Theme.action : area.has-hover ? #eaeaea : #ffffff;
-    border-width: focus.has-focus ? 2px : 1px;
-    border-color: focus.has-focus ? (root.suggested || root.destructive ? #ffffff : Theme.accent) : root.suggested || root.destructive ? transparent : Theme.line;
+
+    width: 30px;
+    height: 30px;
+    border-radius: Theme.radius-s;
+    background: !root.enabled ? transparent : area.has-hover ? root.hover-color : root.active ? Theme.accent-soft : transparent;
+    border-width: focus.has-focus ? 2px : 0px;
+    border-color: Theme.focus;
+    opacity: root.enabled ? 1 : 0.45;
     accessible-role: button;
-    accessible-label: root.text;
+    accessible-label: root.label;
     accessible-enabled: root.enabled;
-    accessible-action-default => { if(root.enabled) { root.clicked(); } }
-    label := Text { text: root.text; horizontal-alignment: center; vertical-alignment: center; color: !root.enabled ? #9a9996 : root.suggested || root.destructive ? #ffffff : Theme.ink; font-weight: 600; }
+    accessible-action-default => { if (root.enabled) { root.clicked(); } }
+
+    animate background { duration: 120ms; }
+
+    Image {
+        source: root.icon;
+        width: 16px;
+        height: 16px;
+        colorize: area.has-hover && root.enabled ? root.hover-icon-color : root.active ? Theme.accent : Theme.muted;
+    }
+
     focus := FocusScope {
         enabled: root.enabled;
         key-pressed(event) => {
-            if(event.text == " " || event.text == Key.Return) { root.clicked(); return accept; }
+            if (event.text == " " || event.text == Key.Return) {
+                root.clicked();
+                return accept;
+            }
             return reject;
         }
     }
-    area := TouchArea { enabled: root.enabled; clicked => { focus.focus(); root.clicked(); } }
-}
 
-component NavItem inherits Rectangle {
-    in property<string> text;
-    in property<bool> selected;
-    in property<bool> enabled: true;
-    callback clicked();
-    height: 44px;
-    border-radius: 6px;
-    background: root.selected ? #dbe9f9 : area.has-hover ? #e5e5e5 : transparent;
-    border-width: focus.has-focus ? 2px : 0px;
-    border-color: Theme.accent;
-    accessible-role: button; accessible-label: root.text; accessible-enabled: root.enabled;
-    accessible-action-default => { if(root.enabled) { root.clicked(); } }
-    Text { x: 16px; text: root.text; vertical-alignment: center; color: root.selected ? #1a5fb4 : Theme.ink; font-weight: root.selected ? 600 : 400; }
-    focus := FocusScope { enabled: root.enabled; key-pressed(event) => { if(event.text == " " || event.text == Key.Return) { root.clicked(); return accept; } return reject; } }
-    area := TouchArea { enabled: root.enabled; clicked => { focus.focus(); root.clicked(); } }
-}
-
-component Heading inherits VerticalLayout {
-    in property<string> title;
-    in property<string> description;
-    spacing: 8px;
-    Text { text: root.title; color: Theme.ink; font-size: 28px; font-weight: 700; }
-    Text { text: root.description; color: Theme.muted; wrap: word-wrap; }
-}
-
-component Row inherits Rectangle {
-    in property<string> label;
-    in property<string> description;
-    in property<string> value;
-    height: root.description == "" ? 52px : 68px;
-    background: #ffffff;
-    HorizontalLayout {
-        padding-left: 18px; padding-right: 18px; spacing: 16px;
-        VerticalLayout {
-            alignment: center; spacing: 4px;
-            Text { text: root.label; color: Theme.ink; font-weight: 600; }
-            if root.description != "": Text { text: root.description; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
-        }
-        Text { width: 170px; text: root.value; color: Theme.muted; horizontal-alignment: right; vertical-alignment: center; overflow: elide; }
+    area := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
     }
-    Rectangle { y: parent.height - 1px; height: 1px; background: #efeeec; }
+}
+
+// A labelled button. `suggested` fills it with the accent colour, `destructive` red.
+// `restore-focus` returns keyboard focus here when a confirmation it opened closes.
+component Action inherits Rectangle {
+    in property <string> text;
+    in property <image> icon;
+    in property <bool> has-icon: false;
+    in property <bool> suggested: false;
+    in property <bool> destructive: false;
+    in property <bool> enabled: true;
+    in property <bool> restore-focus: false;
+    forward-focus: focus;
+    callback focus-restored();
+    callback clicked();
+    changed restore-focus => { if (root.restore-focus && root.enabled) { focus.focus(); root.focus-restored(); } }
+    changed enabled => { if (root.restore-focus && root.enabled) { focus.focus(); root.focus-restored(); } }
+
+    property <color> ink: !root.enabled ? Theme.muted : root.suggested || root.destructive ? Theme.on-accent : Theme.ink;
+
+    min-width: 64px;
+    preferred-width: max(64px, row.preferred-width + 24px);
+    horizontal-stretch: 0;
+    height: 34px;
+    border-radius: Theme.radius-m;
+    background: !root.enabled ? Theme.surface-alt
+        : root.destructive ? (area.has-hover ? Theme.danger-solid.darker(12%) : Theme.danger-solid)
+        : root.suggested ? (area.has-hover ? Theme.accent-hover : Theme.accent)
+        : area.has-hover ? Theme.hover : Theme.surface-alt;
+    border-width: focus.has-focus ? 2px : 0px;
+    border-color: root.suggested || root.destructive ? Theme.on-accent : Theme.focus;
+    opacity: root.enabled ? 1 : 0.6;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if (root.enabled) { root.clicked(); } }
+
+    animate background { duration: 120ms; }
+
+    row := HorizontalLayout {
+        alignment: center;
+        spacing: 6px;
+        if root.has-icon : Image {
+            source: root.icon;
+            width: 13px;
+            height: 13px;
+            y: (parent.height - self.height) / 2;
+            colorize: root.ink;
+        }
+        Text {
+            text: root.text;
+            color: root.ink;
+            font-size: Theme.font-body;
+            font-weight: 600;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+    }
+
+    focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if (event.text == " " || event.text == Key.Return) {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    area := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => {
+            focus.focus();
+            root.clicked();
+        }
+    }
+}
+
+// One tab of the segmented control.
+component Tab inherits Rectangle {
+    in property <image> icon;
+    in property <string> text;
+    in property <bool> selected;
+    in property <bool> enabled: true;
+    in property <bool> compact: false;
+    callback clicked();
+
+    height: 30px;
+    horizontal-stretch: root.compact && !root.selected ? 0.6 : 1;
+    border-radius: Theme.radius-s;
+    background: root.selected ? Theme.surface : area.has-hover && root.enabled ? Theme.hover : transparent;
+    drop-shadow-blur: root.selected ? 3px : 0px;
+    drop-shadow-color: root.selected ? #0000001f : transparent;
+    drop-shadow-offset-y: 1px;
+    border-width: focus.has-focus ? 2px : 0px;
+    border-color: Theme.focus;
+    accessible-role: tab;
+    accessible-label: root.text;
+    accessible-item-selected: root.selected;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if (root.enabled) { root.clicked(); } }
+
+    animate background { duration: 120ms; }
+
+    HorizontalLayout {
+        alignment: center;
+        spacing: 4px;
+        Image {
+            source: root.icon;
+            width: 12px;
+            height: 12px;
+            y: (parent.height - self.height) / 2;
+            colorize: root.selected ? Theme.accent : Theme.muted;
+        }
+        if !root.compact || root.selected : Text {
+            text: root.text;
+            color: root.selected ? Theme.ink : Theme.muted;
+            font-size: Theme.font-small;
+            font-weight: root.selected ? 600 : 400;
+            vertical-alignment: center;
+        }
+    }
+
+    focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if (event.text == " " || event.text == Key.Return) {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    area := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// One stored-history number.
+component StatTile inherits Rectangle {
+    in property <image> icon;
+    in property <string> value;
+    in property <string> label;
+    in property <color> tint: Theme.accent;
+
+    background: Theme.surface;
+    border-radius: Theme.radius-m;
+    border-width: 1px;
+    border-color: Theme.line;
+    accessible-role: text;
+    accessible-label: root.label + " " + root.value;
+
+    VerticalLayout {
+        padding: 10px;
+        spacing: 2px;
+        HorizontalLayout {
+            spacing: 4px;
+            Image {
+                source: root.icon;
+                width: 12px;
+                height: 12px;
+                y: (parent.height - self.height) / 2;
+                colorize: root.tint;
+            }
+            Text {
+                text: root.label;
+                color: Theme.muted;
+                font-size: Theme.font-caption;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+        Text {
+            text: root.value;
+            color: Theme.ink;
+            font-size: 20px;
+            font-weight: 700;
+        }
+    }
+}
+
+// A label/value line inside a card.
+component Row inherits Rectangle {
+    in property <string> label;
+    in property <string> description;
+    in property <string> value;
+    in property <bool> last: false;
+
+    min-height: root.description == "" ? 40px : 54px;
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        padding-top: 7px;
+        padding-bottom: 7px;
+        spacing: 10px;
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            horizontal-stretch: 1;
+            Text {
+                text: root.label;
+                color: Theme.ink;
+                font-weight: 600;
+                font-size: Theme.font-body;
+                wrap: word-wrap;
+            }
+            if root.description != "" : Text {
+                text: root.description;
+                color: Theme.muted;
+                font-size: Theme.font-caption;
+                wrap: word-wrap;
+            }
+        }
+        Text {
+            width: 40%;
+            text: root.value;
+            color: Theme.muted;
+            font-size: Theme.font-small;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+            wrap: word-wrap;
+        }
+    }
+
+    if !root.last : Rectangle {
+        x: 12px;
+        y: parent.height - 1px;
+        width: parent.width - 24px;
+        height: 1px;
+        background: Theme.line-soft;
+    }
 }
 
 component Group inherits Rectangle {
-    background: #ffffff; border-color: Theme.line; border-width: 1px; border-radius: 8px;
+    background: Theme.surface;
+    border-color: Theme.line;
+    border-width: 1px;
+    border-radius: Theme.radius-m;
     clip: true;
-    @children
+    VerticalLayout {
+        @children
+    }
+}
+
+component Note inherits Text {
+    color: Theme.muted;
+    font-size: Theme.font-small;
+    wrap: word-wrap;
 }
 
 export component AppWindow inherits Window {
-    title: "ScreenSense";
-    preferred-width: 1100px; preferred-height: 760px;
-    min-width: 900px; min-height: 600px;
-    background: #fafafa;
-    in property<string> font-family: "sans-serif";
-    default-font-family: root.font-family;
-    default-font-size: 14px;
-    in-out property<bool> english: false;
-    in-out property<int> page: 0;
-    in property<bool> usable: false;
-    in property<bool> policy-pending: false;
-    in property<bool> running: false;
-    in property<bool> stopped: false;
-    in property<int> paused-minutes: 0;
-    in property<bool> capture-enabled: false;
-    in property<bool> images-enabled: false;
-    in property<bool> analysis-enabled: false;
-    in property<bool> can-capture: false;
-    in property<string> backend;
-    in property<string> ocr;
-    in property<string> model;
-    in property<string> retention;
-    in property<string> config-path;
-    in property<string> data-path;
-    in property<string> notes;
-    in property<string> counts;
-    in property<bool> busy: true;
-    in property<string> message;
-    in-out property<string> draft;
-    in property<string> draft-baseline;
-    out property<bool> dirty: root.draft != root.draft-baseline;
-    in-out property<int> confirm-kind: 0;
-    in-out property<int> focus-return: 0;
-    property<int> modal-target: 0;
-    changed confirm-kind => { if(root.confirm-kind != 0) { root.modal-target = 0; modal-focus.focus(); } }
+    // ---- state from Rust ---------------------------------------------------------
+    in property <string> font-family: "sans-serif";
+    in-out property <bool> english: false;
+    in-out property <int> page: 0;
+    in property <bool> usable: false;
+    in property <bool> policy-pending: false;
+    in property <bool> running: false;
+    in property <bool> stopped: false;
+    in property <int> paused-minutes: 0;
+    in property <bool> capture-enabled: false;
+    in property <bool> images-enabled: false;
+    in property <bool> analysis-enabled: false;
+    in property <bool> can-capture: false;
+    in property <string> backend;
+    in property <string> ocr;
+    in property <string> model;
+    in property <string> retention;
+    in property <string> config-path;
+    in property <string> data-path;
+    in property <string> notes;
+    in property <string> counts;
+    in property <string> count-frames: "–";
+    in property <string> count-errors: "–";
+    in property <string> count-commands: "–";
+    in property <string> version: "0.2.0";
+    in property <bool> busy: true;
+    in property <string> message;
+    in-out property <string> draft;
+    in property <string> draft-baseline;
+    out property <bool> dirty: root.draft != root.draft-baseline;
+    in-out property <int> confirm-kind: 0;
+    in-out property <int> focus-return: 0;
+    in-out property <bool> pinned: false;
+    property <int> modal-target: 0;
+    changed confirm-kind => {
+        if (root.confirm-kind != 0) {
+            root.modal-target = 0;
+            modal-focus.focus();
+        }
+    }
+
+    // ---- requests to Rust ----------------------------------------------------------
     callback refresh(bool);
     callback pause(int);
     callback resume();
@@ -132,171 +396,711 @@ export component AppWindow inherits Window {
     callback save(string);
     callback wipe();
     callback cleanup();
-    out property<string> state-title: !root.usable ? (root.english ? "Privacy protection blocked" : "隱私保護已阻擋錄製") : root.stopped ? (root.english ? "Stop requested" : "已要求停止感測器") : root.paused-minutes > 0 ? (root.english ? "Recording paused" : "錄製已暫停") : root.running ? (root.english ? "Sensor is running" : "感測器執行中") : (root.english ? "Sensor is not running" : "感測器尚未啟動");
+    callback drag-window();
+    callback minimize-to-tray();
+    callback quit();
+    callback open-data-dir();
+
+    out property <string> state-title: !root.usable ? (root.english ? "Privacy protection blocked" : "隱私保護已阻擋錄製")
+        : root.stopped ? (root.english ? "Stop requested" : "已要求停止感測器")
+        : root.paused-minutes > 0 ? (root.english ? "Recording paused" : "錄製已暫停")
+        : root.running ? (root.english ? "Sensor is running" : "感測器執行中")
+        : (root.english ? "Sensor is not running" : "感測器尚未啟動");
+    property <color> state-color: !root.usable ? Theme.danger
+        : root.paused-minutes > 0 ? Theme.warning
+        : root.running && !root.stopped ? Theme.success
+        : Theme.muted;
+    property <bool> idle: root.confirm-kind == 0;
+
+    title: "ScreenSense";
+    icon: @image-url("icons/logo.svg");
+    no-frame: true;
+    always-on-top: root.pinned;
+    preferred-width: 400px;
+    preferred-height: 660px;
+    min-width: 360px;
+    min-height: 560px;
+    background: Theme.bg;
+    default-font-family: root.font-family;
+    default-font-size: Theme.font-body;
+
+    // Hairline so the frameless window does not melt into the desktop.
+    Rectangle {
+        border-width: 1px;
+        border-color: Theme.line;
+    }
 
     VerticalLayout {
-        spacing: 0px;
+        padding: 1px;
+
+        // ---- title bar ------------------------------------------------------------
         Rectangle {
-            height: 56px; background: #ebebeb;
+            height: 44px;
+            background: Theme.surface;
+
+            TouchArea {
+                pointer-event(event) => {
+                    if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                        root.drag-window();
+                    }
+                }
+            }
+
             HorizontalLayout {
-                padding-left: 20px; padding-right: 18px; spacing: 12px;
-                Text { width: 205px; text: "ScreenSense"; color: Theme.ink; font-weight: 700; vertical-alignment: center; }
-                Text { text: root.english ? ["Overview", "Capture & analysis", "Preferences", "Diagnostics", "Stored data"][root.page] : ["總覽", "擷取與分析", "偏好設定", "診斷資訊", "儲存資料"][root.page]; color: Theme.ink; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
-                Rectangle { width: 112px; background: transparent;
-                    Action { y: (parent.height - self.height)/2; width: parent.width; enabled: root.confirm-kind == 0; text: root.english ? "繁體中文" : "English"; clicked => { root.english = !root.english; } }
+                padding-left: 12px;
+                padding-right: 6px;
+                spacing: 4px;
+                Image {
+                    source: root.paused-minutes > 0 ? @image-url("icons/logo-paused.svg")
+                        : root.running && root.usable ? @image-url("icons/logo.svg")
+                        : @image-url("icons/logo-idle.svg");
+                    width: 22px;
+                    height: 22px;
+                    y: (parent.height - self.height) / 2;
                 }
-                Rectangle { width: 112px; background: transparent;
-                    Action { y: (parent.height - self.height)/2; width: parent.width; text: root.english ? "Refresh" : "重新整理"; enabled: !root.busy && root.confirm-kind == 0; clicked => { root.refresh(false); } }
+                Rectangle { width: 4px; }
+                Text {
+                    text: "ScreenSense";
+                    color: Theme.ink;
+                    font-size: Theme.font-title;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                }
+                Rectangle { horizontal-stretch: 1; }
+                IconButton {
+                    y: (parent.height - self.height) / 2;
+                    icon: @image-url("icons/globe.svg");
+                    label: root.english ? "切換為繁體中文" : "Switch to English";
+                    enabled: root.idle;
+                    clicked => { root.english = !root.english; }
+                }
+                IconButton {
+                    y: (parent.height - self.height) / 2;
+                    icon: @image-url("icons/refresh.svg");
+                    label: root.english ? "Refresh" : "重新整理";
+                    enabled: !root.busy && root.idle;
+                    clicked => { root.refresh(false); }
+                }
+                IconButton {
+                    y: (parent.height - self.height) / 2;
+                    icon: @image-url("icons/pin.svg");
+                    label: root.pinned ? (root.english ? "Unpin" : "取消置頂") : (root.english ? "Keep on top" : "視窗置頂");
+                    active: root.pinned;
+                    clicked => { root.pinned = !root.pinned; }
+                }
+                IconButton {
+                    y: (parent.height - self.height) / 2;
+                    icon: @image-url("icons/minimize.svg");
+                    label: root.english ? "Minimise to the notification area" : "縮小到系統匣";
+                    clicked => { root.minimize-to-tray(); }
+                }
+                IconButton {
+                    y: (parent.height - self.height) / 2;
+                    icon: @image-url("icons/close.svg");
+                    label: root.english ? "Close the window (the sensor is not affected)" : "關閉視窗（不影響感測器）";
+                    hover-color: Theme.danger-solid;
+                    hover-icon-color: #ffffff;
+                    clicked => { root.quit(); }
                 }
             }
-            Rectangle { y: parent.height - 1px; height: 1px; background: Theme.line; }
-        }
-        HorizontalLayout {
-            spacing: 0px;
+
             Rectangle {
-                width: 224px; background: #f2f2f2;
-                VerticalLayout {
-                    padding: 12px; spacing: 4px;
-                    NavItem { enabled: root.confirm-kind == 0; text: root.english ? "Overview" : "總覽"; selected: root.page == 0; clicked => { root.page = 0; } }
-                    NavItem { enabled: root.confirm-kind == 0; text: root.english ? "Capture & analysis" : "擷取與分析"; selected: root.page == 1; clicked => { root.page = 1; } }
-                    NavItem { enabled: root.confirm-kind == 0; text: root.english ? "Preferences" : "偏好設定"; selected: root.page == 2; clicked => { root.page = 2; } }
-                    NavItem { enabled: root.confirm-kind == 0; text: root.english ? "Diagnostics" : "診斷資訊"; selected: root.page == 3; clicked => { root.page = 3; } }
-                    NavItem { enabled: root.confirm-kind == 0; text: root.english ? "Stored data" : "儲存資料"; selected: root.page == 4; clicked => { root.page = 4; } }
-                    Rectangle { vertical-stretch: 1; background: transparent; }
-                    Text { text: root.english ? "Local-first · 0.1.0" : "資料保留在本機 · 0.1.0"; color: Theme.muted; font-size: 12px; }
-                    Text { text: root.english ? "GUI · GPLv3 / core · MIT" : "GUI · GPLv3／核心 · MIT"; color: Theme.muted; font-size: 11px; }
-                }
-                Rectangle { x: parent.width - 1px; width: 1px; background: Theme.line; }
+                y: parent.height - 1px;
+                height: 1px;
+                background: Theme.line;
             }
-            ScrollView {
-                viewport-width: self.width;
+        }
+
+        // ---- body -----------------------------------------------------------------
+        VerticalLayout {
+            padding: Theme.pad;
+            spacing: 10px;
+            vertical-stretch: 1;
+
+            // Status card
+            Rectangle {
+                background: !root.usable ? Theme.danger-soft : root.paused-minutes > 0 ? Theme.warning-soft : Theme.surface;
+                border-radius: Theme.radius-l;
+                border-width: 1px;
+                border-color: Theme.line;
+
                 VerticalLayout {
-                    padding: 32px; spacing: 24px;
-                    if root.page == 0: VerticalLayout {
-                        spacing: 24px;
-                        Heading { title: root.state-title; description: root.english ? "Check your recording state before sharing context with an agent." : "先確認錄製狀態，再決定是否提供內容給 AI 助理。"; }
+                    padding: 14px;
+                    spacing: 12px;
+
+                    HorizontalLayout {
+                        spacing: 12px;
                         Rectangle {
-                            height: 76px; background: !root.usable ? #f9e8e7 : root.paused-minutes > 0 ? #fff3d6 : #edf2f7; border-radius: 8px;
-                            HorizontalLayout { padding: 16px; spacing: 14px;
-                                Rectangle { width: 12px; height: 12px; border-radius: 6px; background: !root.usable ? #c01c28 : root.paused-minutes > 0 ? #9c6e03 : root.running ? #26a269 : #77767b; }
-                                Text { text: root.paused-minutes > 0 ? (root.english ? "Pause remaining: " : "暫停剩餘約 ") + root.paused-minutes + (root.english ? " min" : " 分鐘") : root.english ? "Opening this app does not start recording or a daemon." : "開啟介面不會開始擷取，也不會啟動背景感測器。"; color: Theme.ink; wrap: word-wrap; vertical-alignment: center; }
+                            width: 14px;
+                            height: 14px;
+                            y: 4px;
+                            border-radius: 7px;
+                            background: root.state-color.transparentize(70%);
+                            Rectangle {
+                                width: 8px;
+                                height: 8px;
+                                border-radius: 4px;
+                                background: root.state-color;
                             }
                         }
-                        HorizontalLayout { spacing: 8px;
-                            Action { text: root.english ? "Pause 5 min" : "暫停 5 分鐘"; enabled: !root.busy && root.confirm-kind == 0; clicked => { root.pause(5); } }
-                            Action { text: root.english ? "Pause 60 min" : "暫停 60 分鐘"; enabled: !root.busy && root.confirm-kind == 0; clicked => { root.pause(60); } }
-                            if root.paused-minutes > 0: Action { text: root.english ? "Clear pause" : "解除暫停"; enabled: !root.busy && root.confirm-kind == 0; restore-focus: root.confirm-kind == 0 && root.focus-return == 3; focus-restored => { root.focus-return = 0; } clicked => { root.confirm-kind = 3; root.focus-return = 3; } }
-                            Rectangle { horizontal-stretch: 1; background: transparent; }
-                        }
-                        Group { height: 204px; VerticalLayout { spacing: 0px;
-                            Row { label: root.english ? "Screen capture" : "畫面擷取"; description: root.english ? "Configuration is separate from a running sensor." : "設定啟用與感測器實際執行是不同狀態。"; value: !root.usable ? (root.english ? "Blocked" : "已阻擋") : !root.can-capture ? (root.english ? "Unavailable" : "目前不支援") : root.capture-enabled ? (root.english ? "Configured" : "設定為啟用") : (root.english ? "Disabled" : "已停用"); }
-                            Row { label: root.english ? "Local analysis" : "本機分析"; description: root.english ? "This app never makes model requests." : "介面本身不會發出模型請求。"; value: root.analysis-enabled ? (root.english ? "Configured" : "設定為啟用") : (root.english ? "Disabled" : "已停用"); }
-                            Row { label: root.english ? "Stored history" : "儲存歷史"; description: root.english ? "Timeline / frames / errors / commands / insights" : "時間軸／影格／錯誤／指令／分析結果"; value: root.counts; }
-                        } }
-                        if root.policy-pending: HorizontalLayout { spacing: 8px;
-                            Text { text: root.english ? "History is hidden until you confirm privacy cleanup." : "歷史已隱藏，待您確認隱私清理。"; wrap: word-wrap; color: Theme.ink; vertical-alignment: center; }
-                            Action { text: root.english ? "Review cleanup…" : "確認清理…"; enabled: !root.busy && root.confirm-kind == 0; restore-focus: root.confirm-kind == 0 && root.focus-return == 5; focus-restored => { root.focus-return = 0; } clicked => { root.confirm-kind = 5; root.focus-return = 5; } }
-                        }
-                        Text { text: root.english ? "Start the sensor explicitly with the existing CLI: screensense daemon start. This GUI does not manage daemon startup." : "如需開始錄製，請明確使用既有 CLI：screensense daemon start。本版介面不管理感測器啟動。"; color: Theme.muted; wrap: word-wrap; }
-                    }
-                    if root.page == 1: VerticalLayout {
-                        spacing: 24px;
-                        Heading { title: root.english ? "Capture & analysis" : "擷取與分析"; description: root.english ? "Actual capabilities and current configuration. No screen content is shown here." : "查看實際平台能力與目前設定；此頁不顯示畫面內容。"; }
-                        Group { height: 260px; VerticalLayout { spacing: 0px;
-                            Row { label: root.english ? "Capture backend" : "擷取後端"; value: root.backend; }
-                            Row { label: root.english ? "Window capture" : "視窗擷取"; value: root.can-capture ? (root.english ? "Supported" : "平台支援") : (root.english ? "Unavailable" : "目前不支援"); }
-                            Row { label: root.english ? "OCR engine" : "OCR 引擎"; value: root.ocr != "" ? root.ocr : (root.english ? "No sensor report" : "尚無感測器回報"); }
-                            Row { label: root.english ? "Stored images" : "保留遮罩後影像"; value: root.images-enabled ? (root.english ? "Configured" : "設定為啟用") : (root.english ? "Disabled" : "已停用"); }
-                            Row { label: root.english ? "Analysis model" : "分析模型"; value: root.model != "" ? root.model : (root.english ? "Not configured" : "尚未設定"); }
-                        } }
-                        Text { text: root.english ? "Wayland can display this GUI, but ScreenSense's current capture backend requires X11. A null backend cannot capture. Windows app-specific capture compatibility still needs validation." : "Wayland 可顯示介面，但目前 Linux 擷取需要 X11。null 後端無法擷取。Windows 各應用的擷取相容性仍需實際驗證。"; color: Theme.muted; wrap: word-wrap; }
-                        Heading { title: root.english ? "Problems" : "狀態與問題"; description: root.notes == "" ? (root.english ? "No reported problems. This is not a capture test." : "目前沒有回報問題；這不代表已通過擷取測試。") : root.notes; }
-                    }
-                    if root.page == 2: VerticalLayout {
-                        spacing: 16px;
-                        Heading { title: root.english ? "Preferences" : "偏好設定"; description: root.english ? "Edit the real TOML configuration. Validate first; saving requires confirmation." : "編輯實際 TOML 設定。先驗證，儲存前再確認套用後果。"; }
-                        Group { height: 120px; VerticalLayout { spacing: 0px;
-                            Row { label: root.english ? "Privacy rules" : "隱私規則"; description: root.english ? "Built-in protections remain additive." : "自訂規則只能疊加，不能移除內建保護。"; value: root.usable ? (root.english ? "Valid" : "可用") : (root.english ? "Blocked" : "已阻擋"); }
-                            Row { label: root.english ? "Retention: images / frames / timeline" : "保留時間：影像／影格／時間軸"; value: root.retention; }
-                        } }
-                        Text { text: root.config-path; color: Theme.muted; wrap: word-wrap; font-size: 12px; }
-                        TextEdit {
-                            height: 240px; text <=> root.draft; enabled: !root.busy && root.confirm-kind == 0;
-                            accessible-label: root.english ? "Configuration editor" : "設定編輯器";
-                            read-only: root.busy || root.confirm-kind != 0;
-                            accessible-action-set-value(value) => {
-                                if(!root.busy && root.confirm-kind == 0) { root.draft = value; }
+                        VerticalLayout {
+                            spacing: 2px;
+                            Text {
+                                text: root.state-title;
+                                color: Theme.ink;
+                                font-size: 17px;
+                                font-weight: 700;
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: root.paused-minutes > 0
+                                    ? (root.english ? "Pause remaining: " + root.paused-minutes + " min" : "暫停剩餘約 " + root.paused-minutes + " 分鐘")
+                                    : (root.english ? "Opening this app does not start recording or a daemon." : "開啟介面不會開始擷取，也不會啟動背景感測器。");
+                                color: Theme.muted;
+                                font-size: Theme.font-small;
+                                wrap: word-wrap;
                             }
                         }
-                        HorizontalLayout { spacing: 8px;
-                            Action { text: root.english ? "Validate" : "驗證設定"; enabled: !root.busy && root.confirm-kind == 0; clicked => { root.validate(root.draft); } }
-                            Action { text: root.english ? "Save…" : "儲存…"; suggested: true; enabled: !root.busy && root.dirty && root.confirm-kind == 0; restore-focus: root.confirm-kind == 0 && root.focus-return == 1; focus-restored => { root.focus-return = 0; } clicked => { root.confirm-kind = 1; root.focus-return = 1; } }
-                            Action { text: root.english ? "Reload…" : "重新載入…"; enabled: !root.busy && root.confirm-kind == 0; restore-focus: root.confirm-kind == 0 && root.focus-return == 4; focus-restored => { root.focus-return = 0; } clicked => { if(root.dirty) { root.confirm-kind = 4; root.focus-return = 4; } else { root.refresh(true); } } }
-                            Rectangle { horizontal-stretch: 1; background: transparent; }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Action {
+                            horizontal-stretch: 1;
+                            has-icon: true;
+                            icon: @image-url("icons/pause.svg");
+                            accessible-label: root.english ? "Pause 5 minutes" : "暫停 5 分鐘";
+                            text: root.english ? "5 min" : "5 分鐘";
+                            enabled: !root.busy && root.idle;
+                            clicked => { root.pause(5); }
+                        }
+                        Action {
+                            horizontal-stretch: 1;
+                            has-icon: true;
+                            icon: @image-url("icons/pause.svg");
+                            suggested: root.paused-minutes == 0;
+                            accessible-label: root.english ? "Pause 60 minutes" : "暫停 60 分鐘";
+                            text: root.english ? "60 min" : "60 分鐘";
+                            enabled: !root.busy && root.idle;
+                            clicked => { root.pause(60); }
+                        }
+                        if root.paused-minutes > 0 : Action {
+                            horizontal-stretch: 1;
+                            has-icon: true;
+                            icon: @image-url("icons/play.svg");
+                            suggested: true;
+                            text: root.english ? "Resume…" : "解除暫停…";
+                            enabled: !root.busy && root.idle;
+                            restore-focus: root.idle && root.focus-return == 3;
+                            focus-restored => { root.focus-return = 0; }
+                            clicked => {
+                                root.confirm-kind = 3;
+                                root.focus-return = 3;
+                            }
                         }
                     }
-                    if root.page == 3: VerticalLayout {
-                        spacing: 24px;
-                        Heading { title: root.english ? "Diagnostics" : "診斷資訊"; description: root.english ? "Read-only checks. No foreground-window inspection, capture or model probe." : "只讀檢查；不讀取前景視窗、不擷取畫面，也不連線探測模型。"; }
-                        Group { height: 208px; VerticalLayout { spacing: 0px;
-                            Row { label: root.english ? "ScreenSense version" : "ScreenSense 版本"; value: "0.1.0"; }
-                            Row { label: root.english ? "Sensor heartbeat and process" : "感測器心跳與行程"; value: root.running ? (root.english ? "Present" : "目前存在") : (root.english ? "Not running" : "未執行"); }
-                            Row { label: root.english ? "Stop request" : "停止要求"; value: root.stopped ? (root.english ? "Retained" : "保留中") : (root.english ? "None" : "無"); }
-                            Row { label: root.english ? "Configuration" : "設定驗證"; value: root.usable ? (root.english ? "Valid" : "可用") : (root.english ? "Blocked" : "已阻擋"); }
-                        } }
-                        Text { text: (root.english ? "Configuration\n" : "設定檔\n") + root.config-path + (root.english ? "\n\nData directory\n" : "\n\n資料目錄\n") + root.data-path; wrap: word-wrap; color: Theme.muted; }
-                        Text { text: root.notes == "" ? (root.english ? "No reported problems." : "目前沒有回報問題。") : root.notes; wrap: word-wrap; color: Theme.ink; }
+                }
+            }
+
+            // Stored history at a glance
+            HorizontalLayout {
+                spacing: 8px;
+                StatTile {
+                    horizontal-stretch: 1;
+                    icon: @image-url("icons/monitor.svg");
+                    label: root.english ? "Frames" : "畫面";
+                    value: root.count-frames;
+                }
+                StatTile {
+                    horizontal-stretch: 1;
+                    icon: @image-url("icons/alert.svg");
+                    label: root.english ? "Errors" : "錯誤";
+                    value: root.count-errors;
+                    tint: Theme.danger;
+                }
+                StatTile {
+                    horizontal-stretch: 1;
+                    icon: @image-url("icons/terminal.svg");
+                    label: root.english ? "Commands" : "指令";
+                    value: root.count-commands;
+                    tint: Theme.success;
+                }
+            }
+
+            // Tabs
+            Rectangle {
+                background: Theme.surface-alt;
+                border-radius: Theme.radius-m;
+                height: 38px;
+                HorizontalLayout {
+                    padding: 4px;
+                    spacing: 2px;
+                    for item[i] in [
+                        { icon: @image-url("icons/status.svg"), zh: "總覽", en: "Overview" },
+                        { icon: @image-url("icons/monitor.svg"), zh: "擷取", en: "Capture" },
+                        { icon: @image-url("icons/settings.svg"), zh: "設定", en: "Settings" },
+                        { icon: @image-url("icons/doctor.svg"), zh: "診斷", en: "Diagnose" },
+                        { icon: @image-url("icons/database.svg"), zh: "資料", en: "Data" },
+                    ] : Tab {
+                        compact: root.english;
+                        icon: item.icon;
+                        text: root.english ? item.en : item.zh;
+                        selected: root.page == i;
+                        enabled: root.idle;
+                        clicked => { root.page = i; }
                     }
-                    if root.page == 4: VerticalLayout {
-                        spacing: 24px;
-                        Heading { title: root.english ? "Stored data" : "儲存資料"; description: root.english ? "Control the history stored in this data directory." : "管理目前資料目錄中的歷史。"; }
-                        Group { height: 68px; Row { label: root.english ? "History records" : "歷史筆數"; description: root.english ? "Timeline / frames / errors / commands / insights" : "時間軸／影格／錯誤／指令／分析結果"; value: root.counts; } }
-                        Text { text: root.english ? "Clear all removes recorded history, redacted images, search data and hook session history. It keeps configuration, sensitive-window marks, pause and stop requests. Deletion cannot be undone; it does not guarantee forensic erasure from backups or storage media." : "清除會刪除所有歷史、遮罩後影像、搜尋資料與 hook 工作階段。設定、敏感視窗標記、暫停及停止要求會保留。無法復原，也不保證備份或儲存媒體上的鑑識抹除。"; color: Theme.ink; wrap: word-wrap; }
-                        if root.policy-pending: HorizontalLayout { spacing: 8px;
-                            Text { text: root.english ? "Counts are hidden pending privacy cleanup." : "筆數已隱藏，待確認隱私清理。"; wrap: word-wrap; color: Theme.ink; vertical-alignment: center; }
-                            Action { text: root.english ? "Review cleanup…" : "確認清理…"; enabled: !root.busy && root.confirm-kind == 0; restore-focus: root.confirm-kind == 0 && root.focus-return == 5; focus-restored => { root.focus-return = 0; } clicked => { root.confirm-kind = 5; root.focus-return = 5; } }
+                }
+            }
+
+            // Page content
+            Rectangle {
+                vertical-stretch: 1;
+                clip: true;
+
+                ScrollView {
+                    content-width: self.visible-width;
+                    VerticalLayout {
+                        width: parent.visible-width;
+                        spacing: 10px;
+                        padding-bottom: 4px;
+
+                        if root.page == 0 : VerticalLayout {
+                            spacing: 10px;
+                            Group {
+                                Row {
+                                    label: root.english ? "Screen capture" : "畫面擷取";
+                                    description: root.english ? "Configuration is separate from a running sensor." : "設定啟用與感測器實際執行是不同狀態。";
+                                    value: !root.usable ? (root.english ? "Blocked" : "已阻擋") : !root.can-capture ? (root.english ? "Unavailable" : "目前不支援") : root.capture-enabled ? (root.english ? "Configured" : "設定為啟用") : (root.english ? "Disabled" : "已停用");
+                                }
+                                Row {
+                                    label: root.english ? "Local analysis" : "本機分析";
+                                    description: root.english ? "This app never makes model requests." : "介面本身不會發出模型請求。";
+                                    value: root.analysis-enabled ? (root.english ? "Configured" : "設定為啟用") : (root.english ? "Disabled" : "已停用");
+                                }
+                                Row {
+                                    last: true;
+                                    label: root.english ? "Stored history" : "儲存歷史";
+                                    description: root.english ? "Timeline / frames / errors / commands / insights" : "時間軸／影格／錯誤／指令／分析結果";
+                                    value: root.counts;
+                                }
+                            }
+                            if root.policy-pending : HorizontalLayout {
+                                spacing: 8px;
+                                Note {
+                                    text: root.english ? "History is hidden until you confirm privacy cleanup." : "歷史已隱藏，待您確認隱私清理。";
+                                    color: Theme.ink;
+                                    vertical-alignment: center;
+                                }
+                                Action {
+                                    text: root.english ? "Review cleanup…" : "確認清理…";
+                                    enabled: !root.busy && root.idle;
+                                    restore-focus: root.idle && root.focus-return == 5;
+                                    focus-restored => { root.focus-return = 0; }
+                                    clicked => {
+                                        root.confirm-kind = 5;
+                                        root.focus-return = 5;
+                                    }
+                                }
+                            }
+                            Note {
+                                text: root.english ? "Start the sensor explicitly with the CLI: screensense daemon start. This window does not manage daemon startup." : "如需開始錄製，請明確使用 CLI：screensense daemon start。本介面不管理感測器啟動。";
+                            }
                         }
-                        HorizontalLayout { Action { text: root.english ? "Clear all history…" : "清除所有歷史…"; destructive: true; enabled: !root.busy && root.confirm-kind == 0; restore-focus: root.confirm-kind == 0 && root.focus-return == 2; focus-restored => { root.focus-return = 0; } clicked => { root.confirm-kind = 2; root.focus-return = 2; } } Rectangle { horizontal-stretch: 1; background: transparent; } }
+
+                        if root.page == 1 : VerticalLayout {
+                            spacing: 10px;
+                            Group {
+                                Row {
+                                    label: root.english ? "Capture backend" : "擷取後端";
+                                    value: root.backend;
+                                }
+                                Row {
+                                    label: root.english ? "Window capture" : "視窗擷取";
+                                    value: root.can-capture ? (root.english ? "Supported" : "平台支援") : (root.english ? "Unavailable" : "目前不支援");
+                                }
+                                Row {
+                                    label: root.english ? "OCR engine" : "OCR 引擎";
+                                    value: root.ocr != "" ? root.ocr : (root.english ? "No sensor report" : "尚無感測器回報");
+                                }
+                                Row {
+                                    label: root.english ? "Stored images" : "保留遮罩後影像";
+                                    value: root.images-enabled ? (root.english ? "Configured" : "設定為啟用") : (root.english ? "Disabled" : "已停用");
+                                }
+                                Row {
+                                    last: true;
+                                    label: root.english ? "Analysis model" : "分析模型";
+                                    value: root.model != "" ? root.model : (root.english ? "Not configured" : "尚未設定");
+                                }
+                            }
+                            Note {
+                                text: root.english ? "Wayland can display this window, but capture on Linux needs X11. A null backend cannot capture. Per-app capture on Windows still needs real-world validation." : "Wayland 可顯示介面，但目前 Linux 擷取需要 X11。null 後端無法擷取。Windows 各應用的擷取相容性仍需實際驗證。";
+                            }
+                            Text {
+                                text: root.english ? "Problems" : "狀態與問題";
+                                color: Theme.ink;
+                                font-weight: 700;
+                            }
+                            Note {
+                                text: root.notes == "" ? (root.english ? "No reported problems. This is not a capture test." : "目前沒有回報問題；這不代表已通過擷取測試。") : root.notes;
+                                color: Theme.ink;
+                            }
+                        }
+
+                        if root.page == 2 : VerticalLayout {
+                            spacing: 10px;
+                            Group {
+                                Row {
+                                    label: root.english ? "Privacy rules" : "隱私規則";
+                                    description: root.english ? "Your rules only add to the built-in protections." : "自訂規則只能疊加，不能移除內建保護。";
+                                    value: root.usable ? (root.english ? "Valid" : "可用") : (root.english ? "Blocked" : "已阻擋");
+                                }
+                                Row {
+                                    last: true;
+                                    label: root.english ? "Retention: images / frames / timeline" : "保留：影像／影格／時間軸";
+                                    value: root.retention;
+                                }
+                            }
+                            Note {
+                                text: root.english ? "Edit the real TOML configuration. Validate first; saving asks for confirmation." : "編輯實際 TOML 設定。先驗證，儲存前會再確認套用後果。";
+                            }
+                            Note {
+                                text: root.config-path;
+                                font-size: Theme.font-caption;
+                            }
+                            TextEdit {
+                                height: 200px;
+                                font-size: Theme.font-small;
+                                text <=> root.draft;
+                                enabled: !root.busy && root.idle;
+                                read-only: root.busy || !root.idle;
+                                accessible-label: root.english ? "Configuration editor" : "設定編輯器";
+                                accessible-action-set-value(value) => {
+                                    if (!root.busy && root.idle) {
+                                        root.draft = value;
+                                    }
+                                }
+                            }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Action {
+                                    text: root.english ? "Validate" : "驗證";
+                                    enabled: !root.busy && root.idle;
+                                    clicked => { root.validate(root.draft); }
+                                }
+                                Action {
+                                    text: root.english ? "Save…" : "儲存…";
+                                    suggested: true;
+                                    enabled: !root.busy && root.dirty && root.idle;
+                                    restore-focus: root.idle && root.focus-return == 1;
+                                    focus-restored => { root.focus-return = 0; }
+                                    clicked => {
+                                        root.confirm-kind = 1;
+                                        root.focus-return = 1;
+                                    }
+                                }
+                                Action {
+                                    text: root.english ? "Reload…" : "重新載入…";
+                                    enabled: !root.busy && root.idle;
+                                    restore-focus: root.idle && root.focus-return == 4;
+                                    focus-restored => { root.focus-return = 0; }
+                                    clicked => {
+                                        if (root.dirty) {
+                                            root.confirm-kind = 4;
+                                            root.focus-return = 4;
+                                        } else {
+                                            root.refresh(true);
+                                        }
+                                    }
+                                }
+                                Rectangle { horizontal-stretch: 1; }
+                            }
+                        }
+
+                        if root.page == 3 : VerticalLayout {
+                            spacing: 10px;
+                            Note {
+                                text: root.english ? "Read-only checks. No foreground-window inspection, capture or model probe." : "只讀檢查；不讀取前景視窗、不擷取畫面，也不連線探測模型。";
+                            }
+                            Group {
+                                Row {
+                                    label: root.english ? "ScreenSense version" : "ScreenSense 版本";
+                                    value: root.version;
+                                }
+                                Row {
+                                    label: root.english ? "Sensor heartbeat and process" : "感測器心跳與行程";
+                                    value: root.running ? (root.english ? "Present" : "目前存在") : (root.english ? "Not running" : "未執行");
+                                }
+                                Row {
+                                    label: root.english ? "Stop request" : "停止要求";
+                                    value: root.stopped ? (root.english ? "Retained" : "保留中") : (root.english ? "None" : "無");
+                                }
+                                Row {
+                                    last: true;
+                                    label: root.english ? "Configuration" : "設定驗證";
+                                    value: root.usable ? (root.english ? "Valid" : "可用") : (root.english ? "Blocked" : "已阻擋");
+                                }
+                            }
+                            Note {
+                                text: (root.english ? "Configuration\n" : "設定檔\n") + root.config-path + (root.english ? "\n\nData directory\n" : "\n\n資料目錄\n") + root.data-path;
+                                font-size: Theme.font-caption;
+                            }
+                            Note {
+                                text: root.notes == "" ? (root.english ? "No reported problems." : "目前沒有回報問題。") : root.notes;
+                                color: Theme.ink;
+                            }
+                        }
+
+                        if root.page == 4 : VerticalLayout {
+                            spacing: 10px;
+                            Group {
+                                Row {
+                                    last: true;
+                                    label: root.english ? "History records" : "歷史筆數";
+                                    description: root.english ? "Timeline / frames / errors / commands / insights" : "時間軸／影格／錯誤／指令／分析結果";
+                                    value: root.counts;
+                                }
+                            }
+                            Note {
+                                text: root.english ? "Clear all removes recorded history, redacted images, search data and hook session history. It keeps configuration, sensitive-window marks, pause and stop requests. Deletion cannot be undone; it does not guarantee forensic erasure from backups or storage media." : "清除會刪除所有歷史、遮罩後影像、搜尋資料與 hook 工作階段。設定、敏感視窗標記、暫停及停止要求會保留。無法復原，也不保證備份或儲存媒體上的鑑識抹除。";
+                                color: Theme.ink;
+                            }
+                            if root.policy-pending : HorizontalLayout {
+                                spacing: 8px;
+                                Note {
+                                    text: root.english ? "Counts are hidden pending privacy cleanup." : "筆數已隱藏，待確認隱私清理。";
+                                    color: Theme.ink;
+                                    vertical-alignment: center;
+                                }
+                                Action {
+                                    text: root.english ? "Review cleanup…" : "確認清理…";
+                                    enabled: !root.busy && root.idle;
+                                    restore-focus: root.idle && root.focus-return == 5;
+                                    focus-restored => { root.focus-return = 0; }
+                                    clicked => {
+                                        root.confirm-kind = 5;
+                                        root.focus-return = 5;
+                                    }
+                                }
+                            }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Action {
+                                    text: root.english ? "Clear all history…" : "清除所有歷史…";
+                                    destructive: true;
+                                    enabled: !root.busy && root.idle;
+                                    restore-focus: root.idle && root.focus-return == 2;
+                                    focus-restored => { root.focus-return = 0; }
+                                    clicked => {
+                                        root.confirm-kind = 2;
+                                        root.focus-return = 2;
+                                    }
+                                }
+                                Action {
+                                    has-icon: true;
+                                    icon: @image-url("icons/folder.svg");
+                                    text: root.english ? "Open folder" : "開啟資料夾";
+                                    enabled: root.idle && root.data-path != "";
+                                    clicked => { root.open-data-dir(); }
+                                }
+                                Rectangle { horizontal-stretch: 1; }
+                            }
+                        }
                     }
-                    if root.message != "": Text { text: root.message; color: Theme.ink; wrap: word-wrap; }
-                    if root.busy: Text { text: root.english ? "Working…" : "處理中…"; color: Theme.muted; }
-                    Rectangle { height: 8px; background: transparent; }
+                }
+            }
+
+            // Result of the last action
+            if root.message != "" : Rectangle {
+                background: Theme.accent-soft;
+                border-radius: Theme.radius-s;
+                HorizontalLayout {
+                    padding: 8px;
+                    Text {
+                        text: root.message;
+                        color: Theme.ink;
+                        font-size: Theme.font-small;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+
+        // ---- footer ---------------------------------------------------------------
+        Rectangle {
+            height: 32px;
+            background: Theme.surface;
+            Rectangle {
+                y: 0;
+                height: 1px;
+                background: Theme.line;
+            }
+            HorizontalLayout {
+                padding-left: Theme.pad;
+                padding-right: Theme.pad;
+                Text {
+                    text: (root.english ? "Local-first · " : "資料保留在本機 · ") + root.version + " · GUI GPLv3 / core MIT";
+                    color: Theme.muted;
+                    font-size: Theme.font-caption;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                Rectangle { horizontal-stretch: 1; }
+                Text {
+                    text: root.busy ? (root.english ? "Working…" : "處理中…") : "";
+                    color: Theme.muted;
+                    font-size: Theme.font-caption;
+                    vertical-alignment: center;
                 }
             }
         }
     }
+
+    // ---- confirmation ------------------------------------------------------------
     modal-focus := FocusScope {
         visible: root.confirm-kind != 0;
         enabled: root.confirm-kind != 0;
         focus-on-tab-navigation: false;
         capture-key-pressed(event) => {
-            if(event.text == Key.Escape) { root.confirm-kind = 0; return accept; }
-            if(event.text == Key.Tab) {
+            if (event.text == Key.Escape) {
+                root.confirm-kind = 0;
+                return accept;
+            }
+            if (event.text == Key.Tab) {
                 root.modal-target = root.modal-target == 1 ? 2 : root.modal-target == 2 ? 1 : event.modifiers.shift ? 2 : 1;
-                if(root.modal-target == 1) { cancel-button.focus(); } else { confirm-button.focus(); }
+                if (root.modal-target == 1) {
+                    cancel-button.focus();
+                } else {
+                    confirm-button.focus();
+                }
                 return accept;
             }
             return reject;
         }
-        key-pressed(event) => { if(event.text == Key.Return) { return accept; } return reject; }
+        key-pressed(event) => {
+            if (event.text == Key.Return) {
+                return accept;
+            }
+            return reject;
+        }
+
         Rectangle {
-        background: #00000066;
-        TouchArea { }
-        Rectangle {
-            x: (parent.width - self.width)/2; y: (parent.height - self.height)/2;
-            width: 490px; height: 300px; background: #fafafa; border-radius: 12px; border-width: 1px; border-color: Theme.line;
-            VerticalLayout { padding: 24px; spacing: 24px;
-                Text { text: root.confirm-kind == 2 ? (root.english ? "Clear all history?" : "清除所有歷史？") : root.confirm-kind == 3 ? (root.english ? "Clear pause?" : "解除暫停？") : root.confirm-kind == 4 ? (root.english ? "Discard unsaved edits?" : "捨棄尚未儲存的變更？") : root.confirm-kind == 5 ? (root.english ? "Recheck stored privacy?" : "重新檢查歷史隱私？") : (root.english ? "Apply configuration?" : "套用設定？"); color: Theme.ink; font-size: 22px; font-weight: 700; }
-                Text { text: root.confirm-kind == 2 ? (root.english ? "All recorded history and images will be permanently removed. Configuration, pause and stop requests stay intact. This cannot be undone." : "所有歷史與影像都會永久刪除。設定、暫停及停止要求會保留。此操作無法復原。") : root.confirm-kind == 3 ? (root.english ? "This clears the pause request. An already running sensor may resume capture and configured analysis. No daemon is started." : "這會清除暫停要求。已執行的感測器可能恢復擷取與已設定的分析；不會啟動新的感測器。") : root.confirm-kind == 4 ? (root.english ? "Your unsaved editor changes will be discarded. The configuration file will not be changed." : "編輯器中尚未儲存的變更將被捨棄；設定檔不會更動。") : root.confirm-kind == 5 ? (root.english ? "History that conflicts with current privacy rules and all stored analysis results will be permanently removed. Pause and stop requests remain intact. This cannot be undone." : "不符合目前隱私規則的歷史，以及所有既有分析結果，都會永久刪除。暫停與停止要求會保留。此操作無法復原。") : (root.english ? "Privacy edits remove conflicting history and all stored analysis after saving. Other changes preserve history. Capture or analysis may take effect in a running sensor. Invalid drafts or failed file replacements preserve the file and history; cleanup failures are reported separately." : "隱私規則變更會在儲存後刪除相符歷史與所有分析結果；其他變更保留歷史。擷取或分析可能套用到執行中的感測器。無效草稿或檔案替換失敗會保留設定與歷史；清理失敗會另外提示。"); color: Theme.ink; wrap: word-wrap; }
-                Rectangle { vertical-stretch: 1; background: transparent; }
-                HorizontalLayout { spacing: 12px;
-                    cancel-button := Action { text: root.english ? "Cancel" : "取消"; clicked => { root.confirm-kind = 0; } }
-                    confirm-button := Action { text: root.confirm-kind == 2 ? (root.english ? "Clear history" : "清除歷史") : (root.english ? "Confirm" : "確認"); destructive: root.confirm-kind == 2 || root.confirm-kind == 5; suggested: root.confirm-kind != 2 && root.confirm-kind != 5;
-                        clicked => { root.focus-return = 0; if(root.confirm-kind == 1) { root.save(root.draft); } else if(root.confirm-kind == 2) { root.wipe(); } else if(root.confirm-kind == 3) { root.resume(); } else if(root.confirm-kind == 5) { root.cleanup(); } else { root.refresh(true); } root.confirm-kind = 0; }
+            background: Theme.scrim;
+            TouchArea { }
+            Rectangle {
+                x: 16px;
+                width: parent.width - 32px;
+                y: (parent.height - self.height) / 2;
+                height: dialog.preferred-height;
+                background: Theme.surface;
+                border-radius: Theme.radius-l;
+                border-width: 1px;
+                border-color: Theme.line;
+                drop-shadow-blur: 24px;
+                drop-shadow-color: #00000040;
+                dialog := VerticalLayout {
+                    padding: 18px;
+                    spacing: 14px;
+                    Text {
+                        text: root.confirm-kind == 2 ? (root.english ? "Clear all history?" : "清除所有歷史？")
+                            : root.confirm-kind == 3 ? (root.english ? "Clear pause?" : "解除暫停？")
+                            : root.confirm-kind == 4 ? (root.english ? "Discard unsaved edits?" : "捨棄尚未儲存的變更？")
+                            : root.confirm-kind == 5 ? (root.english ? "Recheck stored privacy?" : "重新檢查歷史隱私？")
+                            : (root.english ? "Apply configuration?" : "套用設定？");
+                        color: Theme.ink;
+                        font-size: 18px;
+                        font-weight: 700;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: root.confirm-kind == 2 ? (root.english ? "All recorded history and images will be permanently removed. Configuration, pause and stop requests stay intact. This cannot be undone." : "所有歷史與影像都會永久刪除。設定、暫停及停止要求會保留。此操作無法復原。")
+                            : root.confirm-kind == 3 ? (root.english ? "This clears the pause request. An already running sensor may resume capture and configured analysis. No daemon is started." : "這會清除暫停要求。已執行的感測器可能恢復擷取與已設定的分析；不會啟動新的感測器。")
+                            : root.confirm-kind == 4 ? (root.english ? "Your unsaved editor changes will be discarded. The configuration file will not be changed." : "編輯器中尚未儲存的變更將被捨棄；設定檔不會更動。")
+                            : root.confirm-kind == 5 ? (root.english ? "History that conflicts with current privacy rules and all stored analysis results will be permanently removed. Pause and stop requests remain intact. This cannot be undone." : "不符合目前隱私規則的歷史，以及所有既有分析結果，都會永久刪除。暫停與停止要求會保留。此操作無法復原。")
+                            : (root.english ? "Privacy edits remove conflicting history and all stored analysis after saving. Other changes preserve history. Capture or analysis may take effect in a running sensor. Invalid drafts or failed file replacements preserve the file and history; cleanup failures are reported separately." : "隱私規則變更會在儲存後刪除相符歷史與所有分析結果；其他變更保留歷史。擷取或分析可能套用到執行中的感測器。無效草稿或檔案替換失敗會保留設定與歷史；清理失敗會另外提示。");
+                        color: Theme.ink;
+                        font-size: Theme.font-body;
+                        wrap: word-wrap;
+                    }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        alignment: end;
+                        cancel-button := Action {
+                            text: root.english ? "Cancel" : "取消";
+                            clicked => { root.confirm-kind = 0; }
+                        }
+                        confirm-button := Action {
+                            text: root.confirm-kind == 2 ? (root.english ? "Clear history" : "清除歷史") : (root.english ? "Confirm" : "確認");
+                            destructive: root.confirm-kind == 2 || root.confirm-kind == 5;
+                            suggested: root.confirm-kind != 2 && root.confirm-kind != 5;
+                            clicked => {
+                                root.focus-return = 0;
+                                if (root.confirm-kind == 1) {
+                                    root.save(root.draft);
+                                } else if (root.confirm-kind == 2) {
+                                    root.wipe();
+                                } else if (root.confirm-kind == 3) {
+                                    root.resume();
+                                } else if (root.confirm-kind == 5) {
+                                    root.cleanup();
+                                } else {
+                                    root.refresh(true);
+                                }
+                                root.confirm-kind = 0;
+                            }
+                        }
                     }
                 }
             }
         }
+    }
+}
+
+// The notification-area icon. A click brings the window back; the menu offers the
+// pause controls. Clearing a pause still goes through the window's confirmation.
+export component Tray inherits SystemTrayIcon {
+    in property <bool> english: false;
+    in property <bool> usable: false;
+    in property <bool> running: false;
+    in property <int> paused-minutes: 0;
+    callback show-window();
+    callback pause(int);
+    callback clear-pause();
+    callback quit();
+
+    icon: root.paused-minutes > 0 ? @image-url("icons/logo-paused.svg")
+        : root.running && root.usable ? @image-url("icons/logo.svg")
+        : @image-url("icons/logo-idle.svg");
+    tooltip: "ScreenSense — " + (root.paused-minutes > 0 ? (root.english ? "paused" : "已暫停")
+        : !root.usable ? (root.english ? "blocked" : "已阻擋")
+        : root.running ? (root.english ? "running" : "執行中")
+        : (root.english ? "sensor not running" : "感測器未執行"));
+    title: "ScreenSense";
+
+    clicked => { root.show-window(); }
+
+    Menu {
+        MenuItem {
+            title: root.english ? "Show ScreenSense" : "顯示視窗";
+            activated => { root.show-window(); }
+        }
+        MenuSeparator { }
+        MenuItem {
+            title: root.english ? "Pause 5 minutes" : "暫停 5 分鐘";
+            activated => { root.pause(5); }
+        }
+        MenuItem {
+            title: root.english ? "Pause 60 minutes" : "暫停 60 分鐘";
+            activated => { root.pause(60); }
+        }
+        MenuItem {
+            title: root.english ? "Clear pause…" : "解除暫停…";
+            enabled: root.paused-minutes > 0;
+            activated => { root.clear-pause(); }
+        }
+        MenuSeparator { }
+        MenuItem {
+            title: root.english ? "Quit" : "結束";
+            activated => { root.quit(); }
         }
     }
 }
