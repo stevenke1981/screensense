@@ -11,6 +11,9 @@ on:
 
 permissions:
   contents: write
+  # The reused CI workflow reads workflow artifacts; a called workflow cannot
+  # ask for more than its caller grants.
+  actions: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -21,6 +24,7 @@ jobs:
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
+      actions: read
 
   build:
     name: Build ${{ matrix.target }}
