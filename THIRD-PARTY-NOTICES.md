@@ -55,7 +55,7 @@ The CLI/core/platform binary links the Rust crates below. The main direct depend
 
 **SQLite.** `libsqlite3-sys` compiles the SQLite amalgamation into the binary. SQLite is in the public domain.
 
-**GUI crate.** `crates/gui` is licensed under GPL-3.0-only (see [`crates/gui/LICENSE`](crates/gui/LICENSE)). Its Slint UI and build crates are pinned to 1.15.1. Slint's upstream metadata offers GPL-3.0-only, royalty-free, and commercial license paths; this repository selects GPL-3.0-only and does not accept Slint royalty-free or commercial license terms. The GUI's GPL license scope does not change the MIT licenses of the existing CLI, core, and platform crates. See [Slint's versioned package metadata](https://raw.githubusercontent.com/slint-ui/slint/v1.15.1/Cargo.toml) and [licensing options](https://slint.dev/pricing).
+**GUI crate.** `crates/gui` is licensed under GPL-3.0-only (see [`crates/gui/LICENSE`](crates/gui/LICENSE)). Its Slint UI and build crates are pinned to 1.18.1 (whose built-in system tray support brings the tray-related crates, for example `ksni` on Linux, which is Unlicense). Slint's upstream metadata offers GPL-3.0-only, royalty-free, and commercial license paths; this repository selects GPL-3.0-only and does not accept Slint royalty-free or commercial license terms. The GUI's GPL license scope does not change the MIT licenses of the existing CLI, core, and platform crates. See [Slint's versioned package metadata](https://raw.githubusercontent.com/slint-ui/slint/v1.18.1/Cargo.toml) and [licensing options](https://slint.dev/pricing).
 
 Each release archive also includes `LICENSES/index.json` and available original `LICENSE`, `NOTICE`, `COPYING` and `COPYRIGHT` texts collected for that archive's target-filtered Cargo dependency set, including build and development dependencies. This collection is not an exact runtime-linked dependency inventory. The online summary below is a concise overview; the per-archive index and texts provide the notices included with that build.
 
@@ -63,10 +63,11 @@ The Windows GUI installer places this index at `licenses/dependencies/index.json
 For crates whose published package omits original notice files, the installer
 includes notices from the exact upstream Git revision recorded in
 `.cargo_vcs_info.json`; `packaging/windows/upstream-notices/index.json` records
-their immutable URLs and SHA-256 hashes. The `simd_helpers` 0.1.0 build helper
-declares MIT in its original manifest but has no complete original license file
-at that revision. Its entry preserves that manifest and separately identifies
-the canonical SPDX MIT reference text, without inventing a copyright notice.
+their immutable URLs and SHA-256 hashes. The `drm-fourcc` 2.2.0, `libseat` 0.2.4
+and `libseat-sys` 0.2.0 crates declare MIT in their original manifests but have
+no complete original license file at their revisions. Their entries preserve
+those manifests and separately identify the canonical SPDX MIT reference text,
+without inventing a copyright notice.
 
 ### Summary by licence
 

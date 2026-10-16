@@ -5,8 +5,8 @@ param(
     [Parameter(Mandatory=$true)][ValidatePattern('^[0-9a-f]{40}$')][string]$ExpectedCommit,
     [ValidatePattern('^(?:[0-9a-f]{40})?$')][string]$BinaryCommit = '',
     [string]$InnoCompiler = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe',
-    [ValidatePattern('^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$')][string]$Version = '0.1.0-preview',
-    [ValidatePattern('^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$')][string]$VersionNumber = '0.1.0.0',
+    [ValidatePattern('^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$')][string]$Version = '0.2.0',
+    [ValidatePattern('^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$')][string]$VersionNumber = '0.2.0.0',
     [ValidatePattern('^ScreenSense\.[A-Za-z0-9.-]{1,80}$')][string]$AppIdentifier = 'ScreenSense.917fbe92-1d22-4f87-af47-e143e7eca3dd'
 )
 $ErrorActionPreference = 'Stop'
@@ -97,6 +97,11 @@ Copy-Item -LiteralPath $cli,$gui -Destination $payload
 Copy-Item -LiteralPath (Join-Path $repo 'crates/gui/LICENSE') -Destination (Join-Path $payload 'LICENSE-GUI-GPL-3.0.txt')
 Copy-Item -LiteralPath (Join-Path $repo 'LICENSE') -Destination (Join-Path $payload 'LICENSE-CORE-MIT.txt')
 Copy-Item -LiteralPath (Join-Path $repo 'THIRD-PARTY-NOTICES.md'),(Join-Path $repo 'README.md'),(Join-Path $repo 'README.zh-TW.md'),(Join-Path $repo 'docs/GUI.md'),(Join-Path $repo 'packaging/windows/INSTALL-README.txt') -Destination $payload
+$iconSource = Join-Path $repo 'packaging/windows/screensense.ico'
+$iconBytes = [System.IO.File]::ReadAllBytes($iconSource)
+$iconHead = $iconBytes[0..3]
+if ($iconBytes.Length -lt 22 -or $iconHead[0] -ne 0 -or $iconHead[1] -ne 0 -or $iconHead[2] -ne 1 -or $iconHead[3] -ne 0) { throw 'packaging/windows/screensense.ico is not a valid ICO file' }
+Copy-Item -LiteralPath $iconSource -Destination $payload
 Copy-Item -LiteralPath (Join-Path $DependencyDir 'LICENSES') -Destination $payload -Recurse
 Copy-Item -LiteralPath (Join-Path $DependencyDir 'dependency-sources.zip') -Destination $payload
 & git -C $repo archive --format=tar --output="$payload/source.tar" HEAD

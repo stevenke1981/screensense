@@ -4,7 +4,8 @@ param(
     [Parameter(Mandatory=$true)][string]$OutputRoot,
     [Parameter(Mandatory=$true)][ValidatePattern('^ScreenSense\.fixture\.[0-9a-f-]{36}$')][string]$FixtureAppId,
     [Parameter(Mandatory=$true)][ValidatePattern('^[0-9a-f]{40}$')][string]$ExpectedCommit,
-    [string]$Python = 'python'
+    [string]$Python = 'python',
+    [ValidatePattern('^[0-9]+\.[0-9]+\.[0-9]+$')][string]$ExpectedCliVersion = '0.2.0'
 )
 $ErrorActionPreference = 'Stop'
 $repo = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -13,6 +14,10 @@ New-Item -ItemType Directory -Path $root -Force | Out-Null
 $fixture = Join-Path $root ('installer-fixture-'+[Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $fixture | Out-Null
 $install = Join-Path $fixture 'app'
+$runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+# The Run value name is shared by every ScreenSense install, so a pre-existing
+# value (a real install with the optional task) is never touched or judged.
+$runValueExistedBefore = $null -ne (Get-ItemProperty -LiteralPath $runKey -Name 'ScreenSenseGui' -ErrorAction SilentlyContinue)
 $registry = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\'+$FixtureAppId+'_is1'
 if (Test-Path -LiteralPath $registry) { throw 'Fixture registration already exists; refusing to touch an existing install' }
 $script:ownedProcessPending=$false
@@ -60,15 +65,20 @@ function Install([string]$installer,[string]$log) {
         if ((Get-FileHash -LiteralPath (Join-Path $install $entry[0]) -Algorithm SHA256).Hash.ToLowerInvariant() -ne $entry[1]) { throw "Installed payload hash mismatch: $($entry[0])" }
     }
     if (-not (Test-Path -LiteralPath (Join-Path $install 'licenses/dependencies/index.json') -PathType Leaf)) { throw 'Original dependency license index missing' }
+    $icon = Join-Path $install 'screensense.ico'
+    if (-not (Test-Path -LiteralPath $icon -PathType Leaf)) { throw 'Installed icon missing' }
+    $iconBytes = [System.IO.File]::ReadAllBytes($icon)
+    if ($iconBytes.Length -lt 22 -or $iconBytes[0] -ne 0 -or $iconBytes[1] -ne 0 -or $iconBytes[2] -ne 1 -or $iconBytes[3] -ne 0) { throw 'Installed icon is not a valid ICO file' }
+    if (-not $runValueExistedBefore -and $null -ne (Get-ItemProperty -LiteralPath $runKey -Name 'ScreenSenseGui' -ErrorAction SilentlyContinue)) { throw 'Default tasks must not create the sign-in Run value' }
 }
 
 $checks=[System.Collections.Generic.List[string]]::new()
 try {
     Install ([System.IO.Path]::GetFullPath($InitialInstaller)) 'install.log'
-    $checks.Add('Per-user installation and uninstall metadata in new isolated directory')
+    $checks.Add('Per-user installation and uninstall metadata in new isolated directory; icon installed; default tasks create no sign-in Run value')
     $cli=Join-Path $install 'screensense.exe'
     $gui=Join-Path $install 'screensense-gui.exe'
-    if ((RunOwned $cli '--version' $true) -notmatch 'screensense 0.1.0') { throw 'Installed CLI version mismatch' }
+    if ((RunOwned $cli '--version' $true) -notmatch ('screensense '+[regex]::Escape($ExpectedCliVersion))) { throw 'Installed CLI version mismatch' }
     $guiOutput=Join-Path $fixture 'gui-check'
     RunOwned $gui "--verify-ui `"$guiOutput`"" $true | Out-Null
     $verification=Get-Content -LiteralPath (Join-Path $guiOutput 'verification.json') -Raw | ConvertFrom-Json
@@ -89,6 +99,7 @@ try {
     $uninstaller=Join-Path $install 'unins000.exe'
     RunOwned $uninstaller "/VERYSILENT /NORESTART /LOG=`"$(Join-Path $fixture 'uninstall.log')`"" | Out-Null
     if (Test-Path -LiteralPath $registry) { throw 'Own uninstall registration remained' }
+    if (Test-Path -LiteralPath (Join-Path $install 'screensense.ico')) { throw 'Installed icon remained' }
     if ((Test-Path -LiteralPath $cli) -or (Test-Path -LiteralPath $gui)) { throw 'Installed binaries remained' }
     if (-not (Test-Path -LiteralPath $sentinel)) { throw 'Uninstall removed a user-created file' }
     if ((Get-FileHash -LiteralPath $config -Algorithm SHA256).Hash -ne $configHash) { throw 'Uninstall changed configuration' }

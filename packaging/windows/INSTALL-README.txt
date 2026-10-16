@@ -1,24 +1,29 @@
-ScreenSense 0.1.0 GUI preview for Windows x64
+ScreenSense 0.2.0 for Windows x64
 
-This installer contains matching CLI and GUI binaries from the development
-branch. The published v0.1.0 release archives contain only the CLI. This
-preview installer is not a new GitHub Release and has not been merged to main.
-Before using a preview, check the workflow result and installer verification
-report for the exact source commit shown in .build.json. A successful payload
-build alone does not establish that install, upgrade, or uninstall checks passed.
+This installer contains matching CLI (screensense.exe) and GUI
+(screensense-gui.exe) binaries built from the source commit recorded in
+BUILD-INFO.json. It is unsigned; see the note on Windows warnings below.
 
 Installation is per user and does not request administrator privileges. It
-does not start ScreenSense, recording, a daemon or a model connection. It does
-not add autostart, shell hooks, PATH entries, services or persistent MCP.
+does not start recording, a daemon or a model connection. It does not add
+shell hooks, PATH entries, services, daemon autostart or persistent MCP.
+Two optional items are offered: a desktop shortcut, and "Start ScreenSense in
+the notification area when I sign in" (off by default; it writes one
+HKCU Run value, ScreenSenseGui, that only opens the GUI as a tray icon and
+never starts recording; uninstall removes it). The last page can launch the
+GUI; opening the GUI does not start recording.
+
+If the GUI is running (it can sit in the notification area), setup and
+uninstall ask you to close it first. Neither force-closes any process.
 
 Start ScreenSense from the Start Menu or run screensense-gui.exe. The CLI is
 screensense.exe. Start recording only when you explicitly choose to use the
 existing CLI workflow and have reviewed your privacy configuration.
 
-Uninstall removes installed program files and shortcuts. It preserves user
+Uninstall removes installed program files, shortcuts and the optional Run value. It preserves user
 configuration and recorded data. Default data: %LOCALAPPDATA%\screensense.
 Default configuration: %APPDATA%\screensense\config.toml. Uninstall is not a
-data wipe. Close your own ScreenSense applications before an upgrade or
+data wipe. Close any separately started ScreenSense CLI daemon before an upgrade or
 uninstall; this installer does not force-close processes.
 
 GUI and Slint: GPL-3.0-only. CLI/core/platform: MIT. Original per-package
@@ -31,7 +36,7 @@ The installer and executables are unsigned. Windows may show an unknown
 publisher or reputation warning. Verify the installer's companion .sha256 file
 and .build.json provenance, including the source commit; follow your
 organization's policy. Do not disable Windows security features to run this
-preview. Real-application capture, private browsing, notifications, physical
+installer. Real-application capture, private browsing, notifications, physical
 input and every Windows configuration are not verified.
 
 Installer generated with Inno Setup: https://jrsoftware.org/

@@ -75,6 +75,16 @@ def pe_imports(binary):
     return sorted(set(found), key=str.lower)
 
 
+def workspace_version():
+    """The `[workspace.package]` version, so the default follows Cargo.toml."""
+    # No tomllib: the Linux release job runs Python 3.10.
+    import re
+    manifest = Path(__file__).resolve().parent.parent / "Cargo.toml"
+    text = manifest.read_text(encoding="utf-8")
+    section = text.split("[workspace.package]", 1)[1].split("\n[", 1)[0]
+    return re.search(r'^version\s*=\s*"([^"]+)"', section, re.M).group(1)
+
+
 def smoke(archive, expected_commit, expected_version):
     report = {"archive": archive.name, "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
               "screen_observation": "disabled", "persistent_integration": False, "checks": []}
@@ -193,7 +203,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("archive", type=Path)
     parser.add_argument("--commit", required=True)
-    parser.add_argument("--version", default="0.1.0")
+    parser.add_argument("--version", default=workspace_version())
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     result = smoke(args.archive.resolve(), args.commit, args.version)
